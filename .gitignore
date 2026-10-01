@@ -1,0 +1,5 @@
+.env
+tools/prefetch-deps/target/
+*.log
+.idea/
+.vscode/

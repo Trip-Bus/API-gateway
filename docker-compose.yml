@@ -1,0 +1,198 @@
+# =============================================================================
+#  TripBus — plataforma completa del MVP con un solo comando.
+#
+#  Estructura esperada (los 8 repositorios en la misma carpeta):
+#     Arquitecturas de software/
+#       API-gateway/  identity/  catalog-service/  seat-inventory-service/
+#       booking-payment-service/  fleet-trip-events-service/  flash-offerts-service/
+#       Realtime-Gateway/
+#
+#  Local (compila desde el código):   docker compose up -d --build
+#  Servidor (imágenes del CI en GHCR): docker compose pull && docker compose up -d
+#  Observabilidad (Prometheus):       docker compose --profile observability up -d
+#  Más réplicas:                      docker compose up -d --scale seat-inventory-service=3
+# =============================================================================
+name: tripbus
+
+x-java-service: &java-service
+  restart: unless-stopped
+  mem_limit: 640m
+  environment: &common-env
+    DB_URL: postgres
+    DB_USERNAME: ${DB_USERNAME:-tripbus}
+    DB_PASSWORD: ${DB_PASSWORD:-tripbus_local_pw}
+    REDIS_HOST: redis
+    IDENTITY_JWKS_URI: http://identity:16001/.well-known/jwks.json
+    INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-tripbus-internal-dev-token}
+    CATALOG_URL: http://catalog-service:16002
+    SEAT_INVENTORY_URL: http://seat-inventory-service:16003
+    FLEET_URL: http://fleet-trip-events-service:16005
+    FLASH_OFFERS_URL: http://flash-offers-service:16006
+    JAVA_OPTS: -XX:MaxRAMPercentage=75 -XX:+UseSerialGC
+    TZ: America/Bogota
+  depends_on: &java-deps
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  # ------------------------------------------------------------------ infraestructura
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-tripbus}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tripbus_local_pw}
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-tripbus}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Genera UNA vez el par de llaves RSA con el que identity firma los JWT (compartido por
+  # todas sus réplicas). En producción las llaves se montan desde un secreto.
+  jwt-keys:
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        if [ ! -f /keys/private.pem ]; then
+          apk add --no-cache openssl > /dev/null &&
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /keys/private.pem &&
+          openssl rsa -in /keys/private.pem -pubout -out /keys/public.pem &&
+          chmod 444 /keys/*.pem && echo "Llaves JWT generadas";
+        else echo "Llaves JWT ya existen"; fi
+    volumes:
+      - jwt-keys:/keys
+
+  # ------------------------------------------------------------------ microservicios
+  identity:
+    <<: *java-service
+    image: ${REGISTRY:-ghcr.io/trip-bus}/identity:${TAG:-latest}
+    build: ../identity
+    environment:
+      <<: *common-env
+      JWT_PRIVATE_KEY_PATH: /keys/private.pem
+      JWT_PUBLIC_KEY_PATH: /keys/public.pem
+      DEMO_USERS_ENABLED: ${DEMO_USERS_ENABLED:-true}
+      DEMO_USERS_PASSWORD: ${DEMO_USERS_PASSWORD:-TripBus2026}
+    volumes:
+      - jwt-keys:/keys:ro
+    depends_on:
+      <<: *java-deps
+      jwt-keys:
+        condition: service_completed_successfully
+
+  catalog-service:
+    <<: *java-service
+    image: ${REGISTRY:-ghcr.io/trip-bus}/catalog-service:${TAG:-latest}
+    build: ../catalog-service
+    environment:
+      <<: *common-env
+      SEED_ON_STARTUP: "true"
+
+  seat-inventory-service:
+    <<: *java-service
+    image: ${REGISTRY:-ghcr.io/trip-bus}/seat-inventory-service:${TAG:-latest}
+    build: ../seat-inventory-service
+
+  booking-payment-service:
+    <<: *java-service
+    image: ${REGISTRY:-ghcr.io/trip-bus}/booking-payment-service:${TAG:-latest}
+    build: ../booking-payment-service
+    environment:
+      <<: *common-env
+      PAYMENT_WEBHOOK_URL: http://booking-payment-service:16004/webhooks/payment
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-tripbus-webhook-dev-secret}
+      TICKET_SECRET: ${TICKET_SECRET:-tripbus-ticket-dev-secret}
+
+  fleet-trip-events-service:
+    <<: *java-service
+    image: ${REGISTRY:-ghcr.io/trip-bus}/fleet-trip-events-service:${TAG:-latest}
+    build: ../fleet-trip-events-service
+    environment:
+      <<: *common-env
+      SIMULATOR_ENABLED: ${SIMULATOR_ENABLED:-true}
+
+  flash-offers-service:
+    <<: *java-service
+    image: ${REGISTRY:-ghcr.io/trip-bus}/flash-offerts-service:${TAG:-latest}
+    build: ../flash-offerts-service
+
+  # ------------------------------------------------------------------ gateways
+  realtime-gateway:
+    restart: unless-stopped
+    mem_limit: 512m
+    image: ${REGISTRY:-ghcr.io/trip-bus}/realtime-gateway:${TAG:-latest}
+    build: ../Realtime-Gateway
+    environment:
+      REDIS_HOST: redis
+      IDENTITY_JWKS_URI: http://identity:16001/.well-known/jwks.json
+      SEAT_INVENTORY_URL: http://seat-inventory-service:16003
+      FLASH_OFFERS_URL: http://flash-offers-service:16006
+      FLEET_URL: http://fleet-trip-events-service:16005
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8080}
+      WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:-*}
+      JAVA_OPTS: -XX:MaxRAMPercentage=75 -XX:+UseSerialGC
+    ports:
+      - "${REALTIME_PORT:-16007}:16007"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  api-gateway:
+    restart: unless-stopped
+    image: ${REGISTRY:-ghcr.io/trip-bus}/api-gateway:${TAG:-latest}
+    build: .
+    environment:
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:-*}
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      identity:
+        condition: service_healthy
+      catalog-service:
+        condition: service_healthy
+      seat-inventory-service:
+        condition: service_healthy
+      booking-payment-service:
+        condition: service_healthy
+      fleet-trip-events-service:
+        condition: service_healthy
+      flash-offers-service:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------ observabilidad
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["observability"]
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+volumes:
+  postgres-data:
+  redis-data:
+  jwt-keys:

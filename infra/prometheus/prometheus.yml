@@ -1,0 +1,15 @@
+# Observabilidad (US-080 / transversal): métricas de todos los servicios.
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: tripbus
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - identity:16001
+          - catalog-service:16002
+          - seat-inventory-service:16003
+          - booking-payment-service:16004
+          - fleet-trip-events-service:16005
+          - flash-offers-service:16006
+          - realtime-gateway:16007

@@ -1,0 +1,163 @@
+# =============================================================================
+#  TripBus — API Gateway (NGINX)
+#  Punto de entrada único REST: enrutamiento, autenticación de borde (JWT validado
+#  con identity vía auth_request), rate limiting global, CORS y logging de acceso.
+#  NO tiene lógica de negocio. El Realtime Gateway (WebSocket) NO pasa por aquí.
+#  Las variables ${...} se reemplazan al iniciar el contenedor (envsubst).
+# =============================================================================
+
+log_format tripbus_json escape=json
+  '{"time":"$time_iso8601","request_id":"$request_id","ip":"$remote_addr",'
+  '"method":"$request_method","uri":"$request_uri","status":$status,'
+  '"bytes":$body_bytes_sent,"duration":$request_time,"user":"$auth_user_id",'
+  '"upstream":"$upstream_addr","upstream_time":"$upstream_response_time"}';
+
+# ---- Rate limiting global: por IP y por usuario (token) -------------------------
+limit_req_zone $binary_remote_addr zone=per_ip:10m   rate=${RATE_LIMIT_PER_IP};
+limit_req_zone $http_authorization zone=per_user:10m rate=${RATE_LIMIT_PER_USER};
+limit_req_zone $binary_remote_addr zone=auth_ip:10m  rate=${RATE_LIMIT_AUTH};
+limit_req_status 429;
+
+# ---- Servicios internos (en Kubernetes/compose el DNS del servicio balancea réplicas)
+upstream identity        { server ${IDENTITY_UPSTREAM};       keepalive 16; }
+upstream catalog         { server ${CATALOG_UPSTREAM};        keepalive 16; }
+upstream seat_inventory  { server ${SEAT_INVENTORY_UPSTREAM}; keepalive 32; }
+upstream booking         { server ${BOOKING_UPSTREAM};        keepalive 16; }
+upstream fleet           { server ${FLEET_UPSTREAM};          keepalive 16; }
+upstream flash_offers    { server ${FLASH_OFFERS_UPSTREAM};   keepalive 32; }
+
+server {
+    listen ${GATEWAY_PORT};
+    server_name _;
+
+    access_log /dev/stdout tripbus_json;
+    client_max_body_size 1m;
+
+    # ---- CORS para el frontend ---------------------------------------------------
+    add_header Access-Control-Allow-Origin   "${CORS_ALLOWED_ORIGIN}" always;
+    add_header Access-Control-Allow-Methods  "GET, POST, PUT, DELETE, OPTIONS" always;
+    add_header Access-Control-Allow-Headers  "Authorization, Content-Type, Idempotency-Key, X-Request-Id" always;
+    add_header Access-Control-Expose-Headers "X-Request-Id, Idempotent-Replayed, Retry-After" always;
+    add_header Access-Control-Max-Age        600 always;
+    add_header X-Request-Id                  $request_id always;
+    if ($request_method = OPTIONS) {
+        return 204;
+    }
+
+    # Límite general por IP (cada location puede definir uno más estricto).
+    limit_req zone=per_ip burst=60 nodelay;
+
+    # ---- Proxy común ---------------------------------------------------------------
+    proxy_http_version 1.1;
+    proxy_set_header Connection        "";
+    proxy_set_header Host              $host;
+    proxy_set_header X-Request-Id      $request_id;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-User-Id         $auth_user_id;
+    proxy_set_header X-User-Role       $auth_user_role;
+    proxy_connect_timeout 2s;
+    proxy_read_timeout    30s;
+    proxy_next_upstream   error timeout http_502 http_503;
+
+    # ---- Autenticación de borde: el JWT se valida con identity ---------------------
+    auth_request_set $auth_user_id   $upstream_http_x_user_id;
+    auth_request_set $auth_user_role $upstream_http_x_user_role;
+
+    location = /_auth {
+        internal;
+        proxy_pass http://identity/auth/validate;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Authorization  $http_authorization;
+        proxy_set_header X-Original-URI $request_uri;
+    }
+
+    error_page 401 = @unauthorized;
+    error_page 429 = @too_many_requests;
+    error_page 502 503 504 = @unavailable;
+
+    location @unauthorized {
+        default_type application/json;
+        return 401 '{"error":{"code":"UNAUTHENTICATED","message":"Se requiere un token de acceso válido","details":{}}}';
+    }
+    location @too_many_requests {
+        default_type application/json;
+        add_header Retry-After 1 always;
+        add_header Access-Control-Allow-Origin "${CORS_ALLOWED_ORIGIN}" always;
+        return 429 '{"error":{"code":"RATE_LIMITED","message":"Demasiadas solicitudes, intenta de nuevo en un momento","details":{}}}';
+    }
+    location @unavailable {
+        default_type application/json;
+        return 503 '{"error":{"code":"SERVICE_UNAVAILABLE","message":"El servicio no está disponible en este momento","details":{}}}';
+    }
+
+    # ======================= Identity ===============================================
+    location = /auth/register { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
+    location = /auth/login    { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
+    location /auth/password-reset/ { limit_req zone=auth_ip burst=5 nodelay; proxy_pass http://identity; }
+    location = /auth/validate { proxy_pass http://identity; }
+    location = /auth/logout   { auth_request /_auth; proxy_pass http://identity; }
+    location /users/          { auth_request /_auth; proxy_pass http://identity; }
+    location = /.well-known/jwks.json { proxy_pass http://identity; }
+
+    # ======================= Fleet + Trip Events ====================================
+    # (regex: tienen prioridad sobre los prefijos /trips/ e /itineraries/ de Catalog)
+    location ~ ^/trips/[^/]+/timeline$            { proxy_pass http://fleet; }
+    location ~ ^/trips/[^/]+/events$              { auth_request /_auth; proxy_pass http://fleet; }
+    location ~ ^/itineraries/[^/]+/bus-position$  { proxy_pass http://fleet; }
+    location /buses/                              { proxy_pass http://fleet; }
+    location /telemetry/ {
+        auth_request /_auth;
+        limit_req zone=per_user burst=100 nodelay;
+        proxy_pass http://fleet;
+    }
+
+    # ======================= Catalog ================================================
+    location /trips/       { proxy_pass http://catalog; }
+    location /itineraries/ { proxy_pass http://catalog; }
+    location /routes/      { proxy_pass http://catalog; }
+    location /admin/       { auth_request /_auth; proxy_pass http://catalog; }
+
+    # ======================= Seat Inventory =========================================
+    # GET (ver mapa/disponibilidad) es público; retener/extender/liberar exige token.
+    location /seats/ {
+        error_page 418 = @seats_public;
+        if ($request_method = GET) { return 418; }
+        auth_request /_auth;
+        limit_req zone=per_user burst=20 nodelay;
+        proxy_pass http://seat_inventory;
+    }
+    location @seats_public { proxy_pass http://seat_inventory; }
+
+    # ======================= Booking + Payment ======================================
+    location /bookings { auth_request /_auth; proxy_pass http://booking; }
+    location /tickets/ { auth_request /_auth; proxy_pass http://booking; }
+    # Webhook de la pasarela: se autentica con su firma HMAC, no con JWT.
+    location = /webhooks/payment { proxy_pass http://booking; }
+
+    # ======================= Flash Offers ===========================================
+    location /offers {
+        error_page 418 = @offers_public;
+        if ($request_method = GET) { return 418; }
+        auth_request /_auth;
+        limit_req zone=per_user burst=20 nodelay;
+        proxy_pass http://flash_offers;
+    }
+    location @offers_public { proxy_pass http://flash_offers; }
+
+    # ======================= Nunca expuestos ========================================
+    location /internal/ { return 404; }
+    location /actuator/ { return 404; }
+
+    location = /health {
+        access_log off;
+        default_type application/json;
+        return 200 '{"status":"UP"}';
+    }
+
+    location / {
+        default_type application/json;
+        return 404 '{"error":{"code":"NOT_FOUND","message":"Ruta no encontrada en el API Gateway","details":{}}}';
+    }
+}

@@ -1,0 +1,82 @@
+# CI/CD del API Gateway: valida la configuración de NGINX y docker-compose, publica la
+# imagen en GHCR y (opcional) despliega la plataforma completa en un servidor con Docker.
+name: CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate:
+    name: Validar configuración
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sintaxis de NGINX (plantilla renderizada)
+        run: |
+          docker build -t api-gateway:test .
+          docker run --rm \
+            --add-host identity:127.0.0.1 --add-host catalog-service:127.0.0.1 \
+            --add-host seat-inventory-service:127.0.0.1 --add-host booking-payment-service:127.0.0.1 \
+            --add-host fleet-trip-events-service:127.0.0.1 --add-host flash-offers-service:127.0.0.1 \
+            api-gateway:test sh -c "/docker-entrypoint.d/20-envsubst-on-templates.sh && nginx -t"
+
+      - name: docker-compose válido
+        run: docker compose config -q
+
+  docker:
+    name: Imagen Docker
+    needs: validate
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/api-gateway
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # Despliegue simple: un servidor (p. ej. una VM de Azure for Students) con Docker.
+  # Se activa creando la variable de repositorio DEPLOY_ENABLED=true y los secretos
+  # DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY. En el servidor debe existir ~/tripbus con
+  # este repositorio clonado y su archivo .env (ver README).
+  deploy:
+    name: Desplegar en el servidor
+    needs: docker
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd ~/tripbus/API-gateway
+            git pull --ff-only
+            docker compose pull
+            docker compose up -d --no-build --remove-orphans
+            docker image prune -f

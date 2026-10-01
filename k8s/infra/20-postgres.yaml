@@ -1,0 +1,76 @@
+# PostgreSQL del MVP: una instancia con una base de datos por microservicio.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: tripbus
+data:
+  01-databases.sql: |
+    CREATE DATABASE tripbus_identity;
+    CREATE DATABASE tripbus_catalog;
+    CREATE DATABASE tripbus_inventory;
+    CREATE DATABASE tripbus_booking;
+    CREATE DATABASE tripbus_fleet;
+    CREATE DATABASE tripbus_offers;
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: tripbus
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: tripbus-secrets, key: DB_USERNAME } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: tripbus-secrets, key: DB_PASSWORD } }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: tripbus
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432

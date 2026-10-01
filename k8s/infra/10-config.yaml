@@ -1,0 +1,36 @@
+# Configuración compartida por todos los microservicios.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tripbus-config
+  namespace: tripbus
+data:
+  DB_URL: postgres
+  REDIS_HOST: redis
+  IDENTITY_JWKS_URI: http://identity:16001/.well-known/jwks.json
+  CATALOG_URL: http://catalog-service:16002
+  SEAT_INVENTORY_URL: http://seat-inventory-service:16003
+  FLEET_URL: http://fleet-trip-events-service:16005
+  FLASH_OFFERS_URL: http://flash-offers-service:16006
+  DEMO_USERS_ENABLED: "true"
+  SEED_ON_STARTUP: "true"
+  SIMULATOR_ENABLED: "false"
+  TZ: America/Bogota
+  JAVA_OPTS: -XX:MaxRAMPercentage=75 -XX:+UseSerialGC
+  # URL pública del API Gateway (la usa la página de demo del Realtime Gateway).
+  PUBLIC_API_URL: http://CAMBIAR-IP-O-DOMINIO:8080
+---
+# PLANTILLA: cambia los valores antes de aplicar (o créalo con kubectl create secret ...).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tripbus-secrets
+  namespace: tripbus
+type: Opaque
+stringData:
+  DB_USERNAME: tripbus
+  DB_PASSWORD: cambia-esta-clave
+  INTERNAL_API_TOKEN: cambia-este-token-interno
+  PAYMENT_WEBHOOK_SECRET: cambia-este-secreto-de-webhook
+  TICKET_SECRET: cambia-este-secreto-de-tiquetes
+  DEMO_USERS_PASSWORD: TripBus2026

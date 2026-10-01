@@ -1,0 +1,51 @@
+# Redis del MVP: locks distribuidos, contador de cupo, cache y bus de eventos (Streams).
+# En producción: Redis Cluster/Sentinel (los locks ya usan hash tags {itinerario:id}).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: tripbus
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["redis-server", "--appendonly", "yes"]
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: tripbus
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
