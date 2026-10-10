@@ -1,0 +1,88 @@
+# =============================================================================
+#  Override de QA (tu PC): se combina con docker-compose.yml.
+#    scripts/qa.ps1 up   (Windows)   |   scripts/qa.sh up   (Linux/macOS)
+#
+#  - Compila cada servicio desde su repo local (rama develop) con GIT_COMMIT=qa-local.
+#    Las carpetas se configuran en .env.qa (*_SRC); por defecto, los repos junto a API-gateway.
+#  - Publica TODOS los puertos para usar el IDE, DBeaver, redis-cli, etc.:
+#      18000 gateway · 18001-18007 servicios · 18100 Redis · 18101-18106 PostgreSQL
+#  - Perfil Spring "qa" (SPRING_PROFILE=qa en .env.qa), simulador GPS y usuarios de demostración.
+# =============================================================================
+
+services:
+  identity-db:
+    ports: ["18101:5432"]
+  catalog-db:
+    ports: ["18102:5432"]
+  seat-inventory-db:
+    ports: ["18103:5432"]
+  booking-db:
+    ports: ["18104:5432"]
+  fleet-db:
+    ports: ["18105:5432"]
+  offers-db:
+    ports: ["18106:5432"]
+  redis:
+    ports: ["18100:6379"]
+
+  identity:
+    build:
+      context: ${IDENTITY_SRC:-../identity}
+      args: { GIT_COMMIT: qa-local }
+    image: ghcr.io/trip-bus/identity:qa-local
+    environment:
+      # El perfil qa de identity crea los usuarios de demostración con esta contraseña.
+      DEMO_USERS_PASSWORD: ${DEMO_USERS_PASSWORD:?Falta DEMO_USERS_PASSWORD en .env.qa}
+    ports: ["18001:18001"]
+
+  catalog-service:
+    build:
+      context: ${CATALOG_SRC:-../catalog-service}
+      args: { GIT_COMMIT: qa-local }
+    image: ghcr.io/trip-bus/catalog-service:qa-local
+    ports: ["18002:18002"]
+
+  seat-inventory-service:
+    build:
+      context: ${SEAT_INVENTORY_SRC:-../seat-inventory-service}
+      args: { GIT_COMMIT: qa-local }
+    image: ghcr.io/trip-bus/seat-inventory-service:qa-local
+    ports: ["18003:18003"]
+
+  booking-payment-service:
+    build:
+      context: ${BOOKING_SRC:-../booking-payment-service}
+      args: { GIT_COMMIT: qa-local }
+    image: ghcr.io/trip-bus/booking-payment-service:qa-local
+    ports: ["18004:18004"]
+
+  fleet-trip-events-service:
+    build:
+      context: ${FLEET_SRC:-../fleet-trip-events-service}
+      args: { GIT_COMMIT: qa-local }
+    image: ghcr.io/trip-bus/fleet-trip-events-service:qa-local
+    environment:
+      SIMULATOR_ENABLED: "true"
+    ports: ["18005:18005"]
+
+  flash-offers-service:
+    build:
+      context: ${FLASH_OFFERS_SRC:-../flash-offerts-service}
+      args: { GIT_COMMIT: qa-local }
+    image: ghcr.io/trip-bus/flash-offerts-service:qa-local
+    ports: ["18006:18006"]
+
+  realtime-gateway:
+    build:
+      context: ${REALTIME_SRC:-../Realtime-Gateway}
+      args: { GIT_COMMIT: qa-local }
+    image: ghcr.io/trip-bus/realtime-gateway:qa-local
+    ports: ["18007:18007"]
+
+  api-gateway:
+    build: .
+    image: ghcr.io/trip-bus/api-gateway:qa-local
+    ports: ["18000:18000"]
+
+  prometheus:
+    ports: ["9090:9090"]

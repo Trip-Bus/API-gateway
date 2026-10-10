@@ -3,5 +3,9 @@
 k8s/
 tools/
 docs/
+infra/
+scripts/
 *.md
 .env
+.env.*
+docker-compose*.yml

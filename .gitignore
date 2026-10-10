@@ -1,4 +1,7 @@
+# Archivos de entorno con valores reales: nunca se suben (los *.example sí).
 .env
+.env.qa
+.env.prod
 tools/prefetch-deps/target/
 *.log
 .idea/

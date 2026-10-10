@@ -1,25 +1,96 @@
-# CI/CD del API Gateway: valida la configuración de NGINX y docker-compose, publica la
-# imagen en GHCR y (opcional) despliega la plataforma completa en un servidor con Docker.
+# CI/CD del API Gateway y de la orquestación de la plataforma (NGINX + Docker Compose).
+#
+# Flujo de ramas y entornos:
+#   rama de trabajo --PR--> develop (QA) --PR de release--> main (PROD)
+#   - develop = QA:   cada push publica la imagen con los tags  qa, develop, sha-<corto>.
+#   - main    = PROD: cada push publica la imagen con los tags  prod, latest, sha-<corto>
+#                     y, si está activado, despliega la plataforma en el servidor.
+#   - Los PR y workflow_dispatch validan y escanean, pero no publican ni despliegan.
+#
+# Este repo NO tiene código Java: no hay pruebas Maven, JaCoCo ni SonarQube. Su "código" es la
+# configuración de NGINX y los compose, y eso es lo que se valida.
+#
+# Jobs:
+#   secretos -> Gitleaks sobre todo el historial git.
+#   validar  -> (1) renderiza la plantilla de NGINX y corre nginx -t; (2) docker compose config -q de
+#               QA y de PROD con los .example; (3) actionlint sobre los workflows.
+#   docker   -> construye la imagen, la escanea con Trivy (siempre) y, solo en push, la publica en GHCR.
+#   deploy   -> PROD por SSH: solo en push a main y con la variable DEPLOY_ENABLED=true (ver README).
+#
+# Login a Docker Hub (secretos DOCKERHUB_USERNAME y DOCKERHUB_TOKEN, token de solo lectura): evita el
+# límite de descargas anónimas ("toomanyrequests") de los runners. Si no existen, se descarga sin
+# autenticar y se deja un aviso. Gitleaks se descarga desde GHCR (ghcr.io/gitleaks).
+# Las actions están fijadas por SHA de commit (inmutable); el comentario indica la versión (runtime Node 24).
 name: CI/CD
 
 on:
   push:
-    branches: [main, develop]
+    branches: [develop, main]
   pull_request:
-    branches: [main, develop]
+    branches: [develop, main]
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
-jobs:
-  validate:
-    name: Validar configuración
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
+jobs:
+  secretos:
+    name: Secretos (Gitleaks)
+    runs-on: ubuntu-latest
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Login a Docker Hub
+        if: env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Aviso sin login a Docker Hub
+        if: env.DOCKERHUB_TOKEN == ''
+        run: |
+          echo "::warning::Falta el secreto DOCKERHUB_TOKEN: las imágenes se descargan sin autenticar y pueden fallar por el límite de Docker Hub."
+
+      # Imagen oficial en vez de gitleaks-action (esa exige licencia en organizaciones).
+      # Un falso positivo revisado se acepta agregando su huella a .gitleaksignore.
+      - name: Gitleaks
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo" -w /repo ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git /repo --redact --no-banner -v
+
+  validar:
+    name: Validar NGINX, compose y workflows
+    runs-on: ubuntu-latest
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Login a Docker Hub
+        if: env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Aviso sin login a Docker Hub
+        if: env.DOCKERHUB_TOKEN == ''
+        run: |
+          echo "::warning::Falta el secreto DOCKERHUB_TOKEN: las imágenes se descargan sin autenticar y pueden fallar por el límite de Docker Hub."
+
+      # El entrypoint de la imagen renderiza la plantilla (envsubst) y el map de CORS antes de nginx -t.
       - name: Sintaxis de NGINX (plantilla renderizada)
         run: |
           docker build -t api-gateway:test .
@@ -27,56 +98,134 @@ jobs:
             --add-host identity:127.0.0.1 --add-host catalog-service:127.0.0.1 \
             --add-host seat-inventory-service:127.0.0.1 --add-host booking-payment-service:127.0.0.1 \
             --add-host fleet-trip-events-service:127.0.0.1 --add-host flash-offers-service:127.0.0.1 \
-            api-gateway:test sh -c "/docker-entrypoint.d/20-envsubst-on-templates.sh && nginx -t"
+            --add-host realtime-gateway:127.0.0.1 \
+            -e CORS_ALLOWED_ORIGIN=http://localhost:5173,http://localhost:18007 \
+            api-gateway:test nginx -t
 
-      - name: docker-compose válido
-        run: docker compose config -q
+      - name: docker compose válido (QA y PROD)
+        run: |
+          docker compose -p tripbus-qa --env-file .env.qa.example \
+            -f docker-compose.yml -f docker-compose.qa.yml config -q
+          echo "QA: base + qa OK"
+          docker compose -p tripbus-prod --env-file .env.prod.example \
+            -f docker-compose.yml -f docker-compose.prod.yml config -q
+          echo "PROD: base + prod OK"
+
+      - name: actionlint
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo" -w /repo rhysd/actionlint:1.7.9 -color
 
   docker:
-    name: Imagen Docker
-    needs: validate
-    if: github.event_name == 'push'
+    name: Imagen Docker (Trivy y publicación)
+    needs: [secretos, validar]
     runs-on: ubuntu-latest
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Login a Docker Hub
+        if: env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Aviso sin login a Docker Hub
+        if: env.DOCKERHUB_TOKEN == ''
+        run: |
+          echo "::warning::Falta el secreto DOCKERHUB_TOKEN: las imágenes se descargan sin autenticar y pueden fallar por el límite de Docker Hub."
+
+      # Tags por entorno: develop -> qa, develop ; main -> prod, latest ; ambos -> sha-<corto>.
+      # Solo se publican en push (ver "Publicar imagen"); en PR/dispatch se calculan pero no se suben.
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/api-gateway
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=qa,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=prod,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Primero se construye y se carga en el Docker local (sin publicar) para escanearla.
+      - name: Construir imagen
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: api-gateway:ci
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Composite: internamente usa setup-trivy v0.2.6 y actions/cache v5 (ambas Node 24).
+      - name: Trivy (vulnerabilidades CRITICAL/HIGH con corrección disponible)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: api-gateway:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Login a GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/api-gateway
-          tags: |
-            type=sha,format=short
-            type=ref,event=branch
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-      - uses: docker/build-push-action@v6
+
+      # Mismo build (sale de la caché) pero publicando con los tags definitivos.
+      - name: Publicar imagen
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
 
-  # Despliegue simple: un servidor (p. ej. una VM de Azure for Students) con Docker.
-  # Se activa creando la variable de repositorio DEPLOY_ENABLED=true y los secretos
-  # DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY. En el servidor debe existir ~/tripbus con
-  # este repositorio clonado y su archivo .env (ver README).
+  # Despliegue de PROD en un servidor con Docker (p. ej. una VM de Azure for Students).
+  # APAGADO hasta tener servidor. Para activarlo (README, sección "Activar el deploy"):
+  #   - variable del repo  DEPLOY_ENABLED=true  (opcional DEPLOY_PATH, por defecto ~/tripbus/API-gateway)
+  #   - secretos DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (llave privada SSH del usuario de despliegue)
+  #   - secretos GHCR_USER y GHCR_TOKEN (PAT con read:packages: las imágenes de GHCR son privadas)
+  # En el servidor debe existir el clon de este repo con su .env.prod.
   deploy:
-    name: Desplegar en el servidor
+    name: Desplegar PROD en el servidor
     needs: docker
-    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
+    environment: produccion
     steps:
-      - uses: appleboy/ssh-action@v1.0.3
+      # Composite (sin runtime de Node): descarga drone-ssh y ejecuta el script en el servidor.
+      - name: git pull + login GHCR + pull + up por SSH
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+        env:
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '~/tripbus/API-gateway' }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: GHCR_USER,GHCR_TOKEN,DEPLOY_PATH
           script: |
-            cd ~/tripbus/API-gateway
+            set -e
+            cd "$(eval echo "$DEPLOY_PATH")"
+            git checkout main
             git pull --ff-only
-            docker compose pull
-            docker compose up -d --no-build --remove-orphans
-            docker image prune -f
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            scripts/prod.sh pull
+            scripts/prod.sh up
+            docker logout ghcr.io

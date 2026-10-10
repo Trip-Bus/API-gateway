@@ -1,77 +1,126 @@
 # =============================================================================
-#  TripBus — plataforma completa del MVP con un solo comando.
+#  TripBus — plataforma completa. ARCHIVO BASE: común a QA y PROD.
 #
-#  Estructura esperada (los 8 repositorios en la misma carpeta):
-#     Arquitecturas de software/
-#       API-gateway/  identity/  catalog-service/  seat-inventory-service/
-#       booking-payment-service/  fleet-trip-events-service/  flash-offerts-service/
-#       Realtime-Gateway/
+#  Este archivo NO se usa solo: siempre se combina con el override del entorno.
+#    QA   (tu PC, compila desde el código, publica todos los puertos):
+#         scripts/qa.ps1 up      |  scripts/qa.sh up
+#    PROD (servidor, imágenes de GHCR, solo publica 18000 y 18007):
+#         scripts/prod.sh pull && scripts/prod.sh up
+#  Los scripts ejecutan:
+#    docker compose -p tripbus-<entorno> --env-file .env.<entorno> -f docker-compose.yml -f docker-compose.<entorno>.yml ...
 #
-#  Local (compila desde el código):   docker compose up -d --build
-#  Servidor (imágenes del CI en GHCR): docker compose pull && docker compose up -d
-#  Observabilidad (Prometheus):       docker compose --profile observability up -d
-#  Más réplicas:                      docker compose up -d --scale seat-inventory-service=3
+#  Aquí: 6 PostgreSQL (una por servicio), Redis con contraseña, llaves JWT, los 7 microservicios,
+#  el API Gateway y Prometheus (profile "observability"). Sin puertos publicados: los publica el override.
+#  Dentro de la red de Docker los contenedores se hablan por NOMBRE de servicio y puerto interno.
+#  Los secretos llegan del archivo .env del entorno; si falta uno, compose no arranca.
 # =============================================================================
-name: tripbus
+
+# ---- Bloques reutilizables (anclas YAML) ------------------------------------------
+x-postgres: &postgres
+  image: postgres:16-alpine
+  restart: unless-stopped
+  mem_limit: 256m
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
 
 x-java-service: &java-service
   restart: unless-stopped
   mem_limit: 640m
-  environment: &common-env
-    DB_URL: postgres
-    DB_USERNAME: ${DB_USERNAME:-tripbus}
-    DB_PASSWORD: ${DB_PASSWORD:-tripbus_local_pw}
-    REDIS_HOST: redis
-    IDENTITY_JWKS_URI: http://identity:16001/.well-known/jwks.json
-    INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-tripbus-internal-dev-token}
-    CATALOG_URL: http://catalog-service:16002
-    SEAT_INVENTORY_URL: http://seat-inventory-service:16003
-    FLEET_URL: http://fleet-trip-events-service:16005
-    FLASH_OFFERS_URL: http://flash-offers-service:16006
-    JAVA_OPTS: -XX:MaxRAMPercentage=75 -XX:+UseSerialGC
-    TZ: America/Bogota
-  depends_on: &java-deps
-    postgres:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
+
+# Variables comunes a todos los servicios Java (cada uno agrega las suyas).
+x-common-env: &common-env
+  SPRING_PROFILES_ACTIVE: ${SPRING_PROFILE:?Falta SPRING_PROFILE (qa o prod) en .env.qa o .env.prod}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env.qa o .env.prod}
+  DB_PORT: 5432
+  TZ: America/Bogota
+
+x-jwks: &jwks
+  IDENTITY_JWKS_URI: http://identity:18001/.well-known/jwks.json
+
+x-internal-token: &internal-token
+  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Falta INTERNAL_API_TOKEN en .env.qa o .env.prod}
 
 services:
-  # ------------------------------------------------------------------ infraestructura
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
+  # ================================================================ bases de datos
+  # Una PostgreSQL por servicio: cada servicio es dueño exclusivo de sus datos.
+  identity-db:
+    <<: *postgres
     environment:
-      POSTGRES_USER: ${DB_USERNAME:-tripbus}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-tripbus_local_pw}
-      POSTGRES_DB: postgres
+      POSTGRES_DB: tripbus_identity
+      POSTGRES_USER: ${IDENTITY_DB_USERNAME:?Falta IDENTITY_DB_USERNAME en .env.qa o .env.prod}
+      POSTGRES_PASSWORD: ${IDENTITY_DB_PASSWORD:?Falta IDENTITY_DB_PASSWORD en .env.qa o .env.prod}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-tripbus}"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      - identity-db-data:/var/lib/postgresql/data
 
+  catalog-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: tripbus_catalog
+      POSTGRES_USER: ${CATALOG_DB_USERNAME:?Falta CATALOG_DB_USERNAME en .env.qa o .env.prod}
+      POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD:?Falta CATALOG_DB_PASSWORD en .env.qa o .env.prod}
+    volumes:
+      - catalog-db-data:/var/lib/postgresql/data
+
+  seat-inventory-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: tripbus_inventory
+      POSTGRES_USER: ${INVENTORY_DB_USERNAME:?Falta INVENTORY_DB_USERNAME en .env.qa o .env.prod}
+      POSTGRES_PASSWORD: ${INVENTORY_DB_PASSWORD:?Falta INVENTORY_DB_PASSWORD en .env.qa o .env.prod}
+    volumes:
+      - seat-inventory-db-data:/var/lib/postgresql/data
+
+  booking-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: tripbus_booking
+      POSTGRES_USER: ${BOOKING_DB_USERNAME:?Falta BOOKING_DB_USERNAME en .env.qa o .env.prod}
+      POSTGRES_PASSWORD: ${BOOKING_DB_PASSWORD:?Falta BOOKING_DB_PASSWORD en .env.qa o .env.prod}
+    volumes:
+      - booking-db-data:/var/lib/postgresql/data
+
+  fleet-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: tripbus_fleet
+      POSTGRES_USER: ${FLEET_DB_USERNAME:?Falta FLEET_DB_USERNAME en .env.qa o .env.prod}
+      POSTGRES_PASSWORD: ${FLEET_DB_PASSWORD:?Falta FLEET_DB_PASSWORD en .env.qa o .env.prod}
+    volumes:
+      - fleet-db-data:/var/lib/postgresql/data
+
+  offers-db:
+    <<: *postgres
+    environment:
+      POSTGRES_DB: tripbus_offers
+      POSTGRES_USER: ${OFFERS_DB_USERNAME:?Falta OFFERS_DB_USERNAME en .env.qa o .env.prod}
+      POSTGRES_PASSWORD: ${OFFERS_DB_PASSWORD:?Falta OFFERS_DB_PASSWORD en .env.qa o .env.prod}
+    volumes:
+      - offers-db-data:/var/lib/postgresql/data
+
+  # ================================================================ Redis (eventos, locks, cache)
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    mem_limit: 256m
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env.qa o .env.prod}"]
+    environment:
+      # redis-cli lee la contraseña de aquí (así no aparece en la línea de comandos).
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
     volumes:
       - redis-data:/data
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
-      retries: 20
+      retries: 10
 
-  # Genera UNA vez el par de llaves RSA con el que identity firma los JWT (compartido por
-  # todas sus réplicas). En producción las llaves se montan desde un secreto.
+  # Contenedor de un solo uso: genera el par RSA con el que identity firma los JWT si aún no existe
+  # (queda en el volumen jwt-keys y se reutiliza en cada arranque).
   jwt-keys:
     image: alpine:3.20
     entrypoint: ["/bin/sh", "-c"]
@@ -86,89 +135,159 @@ services:
     volumes:
       - jwt-keys:/keys
 
-  # ------------------------------------------------------------------ microservicios
+  # ================================================================ microservicios
   identity:
     <<: *java-service
-    image: ${REGISTRY:-ghcr.io/trip-bus}/identity:${TAG:-latest}
-    build: ../identity
+    image: ghcr.io/trip-bus/identity:${TAG:-prod}
     environment:
       <<: *common-env
+      SERVER_PORT: 18001
+      DB_HOST: identity-db
+      DB_NAME: tripbus_identity
+      DB_USERNAME: ${IDENTITY_DB_USERNAME}
+      DB_PASSWORD: ${IDENTITY_DB_PASSWORD}
       JWT_PRIVATE_KEY_PATH: /keys/private.pem
       JWT_PUBLIC_KEY_PATH: /keys/public.pem
-      DEMO_USERS_ENABLED: ${DEMO_USERS_ENABLED:-true}
-      DEMO_USERS_PASSWORD: ${DEMO_USERS_PASSWORD:-TripBus2026}
     volumes:
       - jwt-keys:/keys:ro
     depends_on:
-      <<: *java-deps
+      identity-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
       jwt-keys:
         condition: service_completed_successfully
 
   catalog-service:
     <<: *java-service
-    image: ${REGISTRY:-ghcr.io/trip-bus}/catalog-service:${TAG:-latest}
-    build: ../catalog-service
+    image: ghcr.io/trip-bus/catalog-service:${TAG:-prod}
     environment:
-      <<: *common-env
-      SEED_ON_STARTUP: "true"
-
-  seat-inventory-service:
-    <<: *java-service
-    image: ${REGISTRY:-ghcr.io/trip-bus}/seat-inventory-service:${TAG:-latest}
-    build: ../seat-inventory-service
-
-  booking-payment-service:
-    <<: *java-service
-    image: ${REGISTRY:-ghcr.io/trip-bus}/booking-payment-service:${TAG:-latest}
-    build: ../booking-payment-service
-    environment:
-      <<: *common-env
-      PAYMENT_WEBHOOK_URL: http://booking-payment-service:16004/webhooks/payment
-      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-tripbus-webhook-dev-secret}
-      TICKET_SECRET: ${TICKET_SECRET:-tripbus-ticket-dev-secret}
-
-  fleet-trip-events-service:
-    <<: *java-service
-    image: ${REGISTRY:-ghcr.io/trip-bus}/fleet-trip-events-service:${TAG:-latest}
-    build: ../fleet-trip-events-service
-    environment:
-      <<: *common-env
-      SIMULATOR_ENABLED: ${SIMULATOR_ENABLED:-true}
-
-  flash-offers-service:
-    <<: *java-service
-    image: ${REGISTRY:-ghcr.io/trip-bus}/flash-offerts-service:${TAG:-latest}
-    build: ../flash-offerts-service
-
-  # ------------------------------------------------------------------ gateways
-  realtime-gateway:
-    restart: unless-stopped
-    mem_limit: 512m
-    image: ${REGISTRY:-ghcr.io/trip-bus}/realtime-gateway:${TAG:-latest}
-    build: ../Realtime-Gateway
-    environment:
-      REDIS_HOST: redis
-      IDENTITY_JWKS_URI: http://identity:16001/.well-known/jwks.json
-      SEAT_INVENTORY_URL: http://seat-inventory-service:16003
-      FLASH_OFFERS_URL: http://flash-offers-service:16006
-      FLEET_URL: http://fleet-trip-events-service:16005
-      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8080}
-      WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:-*}
-      JAVA_OPTS: -XX:MaxRAMPercentage=75 -XX:+UseSerialGC
-    ports:
-      - "${REALTIME_PORT:-16007}:16007"
+      <<: [*common-env, *jwks, *internal-token]
+      SERVER_PORT: 18002
+      DB_HOST: catalog-db
+      DB_NAME: tripbus_catalog
+      DB_USERNAME: ${CATALOG_DB_USERNAME}
+      DB_PASSWORD: ${CATALOG_DB_PASSWORD}
+      SEAT_INVENTORY_URL: http://seat-inventory-service:18003
+      SEED_ON_STARTUP: ${SEED_ON_STARTUP:-true}
     depends_on:
+      catalog-db:
+        condition: service_healthy
       redis:
         condition: service_healthy
 
-  api-gateway:
-    restart: unless-stopped
-    image: ${REGISTRY:-ghcr.io/trip-bus}/api-gateway:${TAG:-latest}
-    build: .
+  seat-inventory-service:
+    <<: *java-service
+    image: ghcr.io/trip-bus/seat-inventory-service:${TAG:-prod}
     environment:
-      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:-*}
-    ports:
-      - "${GATEWAY_PORT:-8080}:8080"
+      <<: [*common-env, *jwks, *internal-token]
+      SERVER_PORT: 18003
+      DB_HOST: seat-inventory-db
+      DB_NAME: tripbus_inventory
+      DB_USERNAME: ${INVENTORY_DB_USERNAME}
+      DB_PASSWORD: ${INVENTORY_DB_PASSWORD}
+      CATALOG_URL: http://catalog-service:18002
+    depends_on:
+      seat-inventory-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  booking-payment-service:
+    <<: *java-service
+    image: ghcr.io/trip-bus/booking-payment-service:${TAG:-prod}
+    environment:
+      <<: [*common-env, *jwks, *internal-token]
+      SERVER_PORT: 18004
+      DB_HOST: booking-db
+      DB_NAME: tripbus_booking
+      DB_USERNAME: ${BOOKING_DB_USERNAME}
+      DB_PASSWORD: ${BOOKING_DB_PASSWORD}
+      CATALOG_URL: http://catalog-service:18002
+      SEAT_INVENTORY_URL: http://seat-inventory-service:18003
+      FLASH_OFFERS_URL: http://flash-offers-service:18006
+      TICKET_SECRET: ${TICKET_SECRET:?Falta TICKET_SECRET en .env.qa o .env.prod}
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:?Falta PAYMENT_WEBHOOK_SECRET en .env.qa o .env.prod}
+      # La pasarela sandbox llama al webhook del propio servicio por la red interna.
+      PAYMENT_WEBHOOK_URL: http://booking-payment-service:18004/webhooks/payment
+    depends_on:
+      booking-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  fleet-trip-events-service:
+    <<: *java-service
+    image: ghcr.io/trip-bus/fleet-trip-events-service:${TAG:-prod}
+    environment:
+      <<: [*common-env, *jwks, *internal-token]
+      SERVER_PORT: 18005
+      DB_HOST: fleet-db
+      DB_NAME: tripbus_fleet
+      DB_USERNAME: ${FLEET_DB_USERNAME}
+      DB_PASSWORD: ${FLEET_DB_PASSWORD}
+      CATALOG_URL: http://catalog-service:18002
+      SIMULATOR_ENABLED: ${SIMULATOR_ENABLED:-false}
+    depends_on:
+      fleet-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Repo flash-offerts-service; el nombre del servicio en la red es flash-offers-service.
+  flash-offers-service:
+    <<: *java-service
+    image: ghcr.io/trip-bus/flash-offerts-service:${TAG:-prod}
+    environment:
+      <<: [*common-env, *jwks, *internal-token]
+      SERVER_PORT: 18006
+      DB_HOST: offers-db
+      DB_NAME: tripbus_offers
+      DB_USERNAME: ${OFFERS_DB_USERNAME}
+      DB_PASSWORD: ${OFFERS_DB_PASSWORD}
+      CATALOG_URL: http://catalog-service:18002
+      SEAT_INVENTORY_URL: http://seat-inventory-service:18003
+    depends_on:
+      offers-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ================================================================ gateways
+  # WebSocket + página de demostración. Sin base de datos (solo Redis).
+  realtime-gateway:
+    <<: *java-service
+    mem_limit: 512m
+    image: ghcr.io/trip-bus/realtime-gateway:${TAG:-prod}
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILE}
+      SERVER_PORT: 18007
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      IDENTITY_JWKS_URI: http://identity:18001/.well-known/jwks.json
+      SEAT_INVENTORY_URL: http://seat-inventory-service:18003
+      FLASH_OFFERS_URL: http://flash-offers-service:18006
+      FLEET_URL: http://fleet-trip-events-service:18005
+      PUBLIC_API_URL: ${PUBLIC_API_URL:?Falta PUBLIC_API_URL en .env.qa o .env.prod}
+      WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:?Falta WS_ALLOWED_ORIGINS en .env.qa o .env.prod}
+      TZ: America/Bogota
+    depends_on:
+      redis:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+
+  # API Gateway (NGINX): único punto de entrada REST.
+  api-gateway:
+    image: ghcr.io/trip-bus/api-gateway:${TAG:-prod}
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      GATEWAY_PORT: 18000
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Falta CORS_ALLOWED_ORIGIN en .env.qa o .env.prod}
+      # DNS interno de Docker; valid=10s: si un servicio se reinicia con otra IP, en <=10 s se sigue.
+      RESOLVER: 127.0.0.11 valid=10s ipv6=off
     depends_on:
       identity:
         condition: service_healthy
@@ -183,16 +302,22 @@ services:
       flash-offers-service:
         condition: service_healthy
 
-  # ------------------------------------------------------------------ observabilidad
+  # ================================================================ observabilidad
+  # Solo con el profile "observability": agrega COMPOSE_PROFILES=observability al .env del entorno.
   prometheus:
     image: prom/prometheus:v2.54.1
     profiles: ["observability"]
+    restart: unless-stopped
+    mem_limit: 256m
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    ports:
-      - "9090:9090"
 
 volumes:
-  postgres-data:
+  identity-db-data:
+  catalog-db-data:
+  seat-inventory-db-data:
+  booking-db-data:
+  fleet-db-data:
+  offers-db-data:
   redis-data:
   jwt-keys:

@@ -10,11 +10,11 @@ CI/CD + observabilidad) y de las 27 historias del backlog del Sprint 1.
 | Lenguaje | Java 21 + Spring Boot 3.3.4 en todos los servicios | Mismo stack que `identity`; un solo pipeline. |
 | Comunicación síncrona | **REST interno** (`/internal/**` + `X-Internal-Token`) | El doc *recomienda* gRPC para Seat Inventory y Flash Offers; REST mantiene el MVP simple. Los métodos (`HoldSeats`, `ConfirmSale`, `ReserveOfferSeat`…) existen con la misma semántica, así que migrar a gRPC no cambia la lógica. |
 | Bus de eventos | **Redis Streams**, un stream `tripbus:events` | Cubre lo que el doc llama "Redis Pub/Sub (MVP)" con entrega fiable: cada servicio lee con su *consumer group* (una réplica procesa cada evento) y el Realtime Gateway lee todo (difusión a todas sus réplicas). Kafka en producción. |
-| Base de datos | Un PostgreSQL con **una base por servicio** | "PostgreSQL propia" sin el costo de 6 servidores. Ningún servicio lee la base de otro. |
+| Base de datos | **Una PostgreSQL por servicio** (6 contenedores `postgres:16-alpine`, cada uno con su volumen, usuario y contraseña) | "PostgreSQL propia" literal: ningún servicio puede leer la base de otro ni siquiera por error de configuración, y cada una se respalda/restaura por separado. Antes era un solo servidor con 6 bases (`infra/postgres/01-databases.sql`, ya eliminado). |
 | API Gateway | NGINX (`auth_request` para validar JWT con identity) | Opción listada en el doc; sin dependencias extra. |
 | Pasarela de pagos | **Sandbox local** con webhook firmado (HMAC) que además se reenvía duplicado | No hay credenciales de una pasarela real; la interfaz `PaymentGateway` permite cambiarla (Wompi/PayU). |
 | Telemetría | Stream `tripbus:telemetry` + consumidor independiente | "Ingesta asíncrona" del doc. TimescaleDB opcional: PostgreSQL + índices. |
-| Despliegue | docker-compose (1 servidor) o Kubernetes | Lo más simple que funciona; los manifiestos usan las réplicas del doc. |
+| Despliegue | Docker Compose: QA en el PC del desarrollador, PROD en un servidor | Lo más simple que funciona. Los manifiestos de `k8s/` están desactualizados (ver `k8s/README.md`). |
 
 ### Diferencias menores frente al documento
 
@@ -63,7 +63,7 @@ CI/CD + observabilidad) y de las 27 historias del backlog del Sprint 1.
 | catalog / fleet / realtime / identity | Seed idempotente, búsqueda, ofertas marcadas; outbox; WebSocket con snapshot y difusión; logout y consentimiento. |
 
 Las pruebas `*IT` usan PostgreSQL y Redis reales y se activan con `TRIPBUS_IT=true`
-(en local: `docker compose up -d postgres redis` y crear las bases `tripbus_<servicio>_test`).
+(en local: el `docker-compose.yml` propio de cada servicio levanta su PostgreSQL y Redis).
 
 ## Catálogo de eventos (stream `tripbus:events`)
 
@@ -89,7 +89,20 @@ Tópicos WebSocket: `itinerario:{id}:asientos`, `oferta:{id}:cupo`, `viaje:{id}:
 | seat-inventory | `POST /internal/offers/{id}/seats` · `POST /internal/offers/{id}/release` | reserva de asientos para una oferta |
 | flash-offers | `GET /internal/offers/{offerId}/reservations/by-hold/{holdId}` | validar precio de oferta en Booking |
 
-## Puertos
+## Puertos (convención v3.1)
 
-identity 16001 · catalog 16002 · seat-inventory 16003 · booking-payment 16004 · fleet 16005 ·
-flash-offers 16006 · realtime 16007 · api-gateway 8080.
+| Componente | Puerto | Base de datos (puerto en QA → BD / usuario) |
+|---|---|---|
+| api-gateway (NGINX) | **18000** | — |
+| identity | 18001 | identity-db 18101 → `tripbus_identity` / `identity` |
+| catalog-service | 18002 | catalog-db 18102 → `tripbus_catalog` / `catalog` |
+| seat-inventory-service | 18003 | seat-inventory-db 18103 → `tripbus_inventory` / `inventory` |
+| booking-payment-service | 18004 | booking-db 18104 → `tripbus_booking` / `booking` |
+| fleet-trip-events-service | 18005 | fleet-db 18105 → `tripbus_fleet` / `fleet` |
+| flash-offers-service | 18006 | offers-db 18106 → `tripbus_offers` / `offers` |
+| realtime-gateway | **18007** | sin BD (solo Redis) |
+| Redis (compartido, con contraseña) | 18100 | — |
+
+Dentro de la red de Docker cada servicio escucha en su puerto 1800x y cada PostgreSQL en 5432
+(`DB_HOST=<servicio>-db`, `DB_PORT=5432`). En QA se publican todos los puertos de la tabla; en PROD
+solo 18000 y 18007.
