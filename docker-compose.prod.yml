@@ -1,0 +1,127 @@
+# =============================================================================
+#  Override de PROD (servidor): se combina con docker-compose.yml.
+#    scripts/prod.sh pull && scripts/prod.sh up
+#
+#  - SIN build: usa las imágenes que publica el CI de cada repo en GHCR (tag prod = rama main).
+#    Las imágenes son privadas: antes, docker login ghcr.io con un PAT read:packages (ver README).
+#  - Solo publica 18000 (API Gateway) y 18007 (Realtime/WebSocket). Bases de datos y Redis NO se
+#    publican: solo se alcanzan dentro de la red de Docker.
+#  - Cada secreto es obligatorio: si falta uno en .env.prod, docker compose se niega a arrancar.
+#  - Perfil Spring "prod" (SPRING_PROFILE=prod en .env.prod): sin usuarios de demostración ni Swagger.
+# =============================================================================
+
+x-restart: &restart
+  restart: always
+
+x-prod-env: &prod-env
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env.prod}
+
+x-prod-internal: &prod-internal
+  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Falta INTERNAL_API_TOKEN en .env.prod}
+
+services:
+  identity-db:
+    <<: *restart
+    environment:
+      POSTGRES_USER: ${IDENTITY_DB_USERNAME:?Falta IDENTITY_DB_USERNAME en .env.prod}
+      POSTGRES_PASSWORD: ${IDENTITY_DB_PASSWORD:?Falta IDENTITY_DB_PASSWORD en .env.prod}
+  catalog-db:
+    <<: *restart
+    environment:
+      POSTGRES_USER: ${CATALOG_DB_USERNAME:?Falta CATALOG_DB_USERNAME en .env.prod}
+      POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD:?Falta CATALOG_DB_PASSWORD en .env.prod}
+  seat-inventory-db:
+    <<: *restart
+    environment:
+      POSTGRES_USER: ${INVENTORY_DB_USERNAME:?Falta INVENTORY_DB_USERNAME en .env.prod}
+      POSTGRES_PASSWORD: ${INVENTORY_DB_PASSWORD:?Falta INVENTORY_DB_PASSWORD en .env.prod}
+  booking-db:
+    <<: *restart
+    environment:
+      POSTGRES_USER: ${BOOKING_DB_USERNAME:?Falta BOOKING_DB_USERNAME en .env.prod}
+      POSTGRES_PASSWORD: ${BOOKING_DB_PASSWORD:?Falta BOOKING_DB_PASSWORD en .env.prod}
+  fleet-db:
+    <<: *restart
+    environment:
+      POSTGRES_USER: ${FLEET_DB_USERNAME:?Falta FLEET_DB_USERNAME en .env.prod}
+      POSTGRES_PASSWORD: ${FLEET_DB_PASSWORD:?Falta FLEET_DB_PASSWORD en .env.prod}
+  offers-db:
+    <<: *restart
+    environment:
+      POSTGRES_USER: ${OFFERS_DB_USERNAME:?Falta OFFERS_DB_USERNAME en .env.prod}
+      POSTGRES_PASSWORD: ${OFFERS_DB_PASSWORD:?Falta OFFERS_DB_PASSWORD en .env.prod}
+
+  redis:
+    <<: *restart
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env.prod}"]
+
+  identity:
+    <<: *restart
+    image: ghcr.io/trip-bus/identity:${TAG:-prod}
+    environment:
+      <<: *prod-env
+      DB_USERNAME: ${IDENTITY_DB_USERNAME:?Falta IDENTITY_DB_USERNAME en .env.prod}
+      DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?Falta IDENTITY_DB_PASSWORD en .env.prod}
+
+  catalog-service:
+    <<: *restart
+    image: ghcr.io/trip-bus/catalog-service:${TAG:-prod}
+    environment:
+      <<: [*prod-env, *prod-internal]
+      DB_USERNAME: ${CATALOG_DB_USERNAME:?Falta CATALOG_DB_USERNAME en .env.prod}
+      DB_PASSWORD: ${CATALOG_DB_PASSWORD:?Falta CATALOG_DB_PASSWORD en .env.prod}
+      SEED_ON_STARTUP: ${SEED_ON_STARTUP:-false}
+
+  seat-inventory-service:
+    <<: *restart
+    image: ghcr.io/trip-bus/seat-inventory-service:${TAG:-prod}
+    environment:
+      <<: [*prod-env, *prod-internal]
+      DB_USERNAME: ${INVENTORY_DB_USERNAME:?Falta INVENTORY_DB_USERNAME en .env.prod}
+      DB_PASSWORD: ${INVENTORY_DB_PASSWORD:?Falta INVENTORY_DB_PASSWORD en .env.prod}
+
+  booking-payment-service:
+    <<: *restart
+    image: ghcr.io/trip-bus/booking-payment-service:${TAG:-prod}
+    environment:
+      <<: [*prod-env, *prod-internal]
+      DB_USERNAME: ${BOOKING_DB_USERNAME:?Falta BOOKING_DB_USERNAME en .env.prod}
+      DB_PASSWORD: ${BOOKING_DB_PASSWORD:?Falta BOOKING_DB_PASSWORD en .env.prod}
+      TICKET_SECRET: ${TICKET_SECRET:?Falta TICKET_SECRET en .env.prod}
+      PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:?Falta PAYMENT_WEBHOOK_SECRET en .env.prod}
+
+  fleet-trip-events-service:
+    <<: *restart
+    image: ghcr.io/trip-bus/fleet-trip-events-service:${TAG:-prod}
+    environment:
+      <<: [*prod-env, *prod-internal]
+      DB_USERNAME: ${FLEET_DB_USERNAME:?Falta FLEET_DB_USERNAME en .env.prod}
+      DB_PASSWORD: ${FLEET_DB_PASSWORD:?Falta FLEET_DB_PASSWORD en .env.prod}
+      SIMULATOR_ENABLED: ${SIMULATOR_ENABLED:-false}
+
+  flash-offers-service:
+    <<: *restart
+    image: ghcr.io/trip-bus/flash-offerts-service:${TAG:-prod}
+    environment:
+      <<: [*prod-env, *prod-internal]
+      DB_USERNAME: ${OFFERS_DB_USERNAME:?Falta OFFERS_DB_USERNAME en .env.prod}
+      DB_PASSWORD: ${OFFERS_DB_PASSWORD:?Falta OFFERS_DB_PASSWORD en .env.prod}
+
+  realtime-gateway:
+    <<: *restart
+    image: ghcr.io/trip-bus/realtime-gateway:${TAG:-prod}
+    environment:
+      <<: *prod-env
+      PUBLIC_API_URL: ${PUBLIC_API_URL:?Falta PUBLIC_API_URL en .env.prod}
+      WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:?Falta WS_ALLOWED_ORIGINS en .env.prod}
+    ports: ["18007:18007"]
+
+  api-gateway:
+    <<: *restart
+    image: ghcr.io/trip-bus/api-gateway:${TAG:-prod}
+    environment:
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Falta CORS_ALLOWED_ORIGIN en .env.prod}
+    ports: ["18000:18000"]
+
+  prometheus:
+    <<: *restart

@@ -1,4 +1,4 @@
-# Observabilidad (US-080 / transversal): métricas de todos los servicios.
+# Observabilidad (US-080 / transversal): métricas de todos los servicios (puertos internos de la red de Docker).
 global:
   scrape_interval: 15s
 scrape_configs:
@@ -6,10 +6,10 @@ scrape_configs:
     metrics_path: /actuator/prometheus
     static_configs:
       - targets:
-          - identity:16001
-          - catalog-service:16002
-          - seat-inventory-service:16003
-          - booking-payment-service:16004
-          - fleet-trip-events-service:16005
-          - flash-offers-service:16006
-          - realtime-gateway:16007
+          - identity:18001
+          - catalog-service:18002
+          - seat-inventory-service:18003
+          - booking-payment-service:18004
+          - fleet-trip-events-service:18005
+          - flash-offers-service:18006
+          - realtime-gateway:18007

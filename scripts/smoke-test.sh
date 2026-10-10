@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  Prueba de humo extremo a extremo del MVP de TripBus, TODO a través del API Gateway.
-#  Requisitos: curl y jq. Uso:  ./scripts/smoke-test.sh [http://localhost:8080]
-#  Supone los usuarios de demostración (DEMO_USERS_ENABLED=true).
+#  Requisitos: curl y jq. Uso:  ./scripts/smoke-test.sh [http://localhost:18000] [http://localhost:18007]
+#  Pensado para QA (perfil qa): usa los usuarios de demostración y el catálogo sembrado.
+#  Sin jq (p. ej. Windows), córrelo en un contenedor dentro de la red de QA (ver README).
 # =============================================================================
 set -euo pipefail
-API=${1:-${API_URL:-http://localhost:8080}}
+API=${1:-${API_URL:-http://localhost:18000}}
+RT=${2:-${RT_URL:-http://localhost:18007}}
 PASS=${DEMO_USERS_PASSWORD:-TripBus2026}
 ok()   { printf '  \033[32m✔\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m✘ %s\033[0m\n' "$*"; exit 1; }
@@ -21,6 +23,13 @@ req()  { # método url [token] [body] [headers extra...] -> imprime "status body
 status() { echo "${1%% *}"; }
 body()   { echo "${1#* }"; }
 login()  { body "$(req POST /auth/login '' "{\"email\":\"$1\",\"password\":\"$PASS\"}")" | jq -r .accessToken; }
+
+step "0. Gateways arriba (18000 REST, 18007 Realtime)"
+[ "$(curl -s -o /dev/null -w "%{http_code}" "$API/health")" = 200 ] && ok "API Gateway $API/health → 200" || fail "API Gateway no responde en $API"
+[ "$(curl -s -o /dev/null -w "%{http_code}" "$API/auth/validate")" = 404 ] && ok "/auth/validate no es público (404)" || fail "/auth/validate expuesto"
+[ "$(curl -s -o /dev/null -w "%{http_code}" "$API/actuator/health")" = 404 ] && ok "/actuator no se expone (404)" || fail "/actuator expuesto"
+[ "$(curl -s -o /dev/null -w "%{http_code}" "$RT/")" = 200 ] && ok "Realtime Gateway: página de demo en $RT/" || fail "Realtime no responde en $RT"
+ok "demo-config.json apunta a $(curl -s "$RT/demo-config.json" | jq -r .apiUrl)"
 
 step "1. Identity: login de los usuarios de demostración (US-096)"
 PAX=$(login pasajero@tripbus.co); OPER=$(login operador@tripbus.co); COND=$(login conductor@tripbus.co); ADMIN=$(login admin@tripbus.co)
