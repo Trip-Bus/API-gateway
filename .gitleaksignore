@@ -1,0 +1,4 @@
+# Falsos positivos revisados de Gitleaks (una huella por línea: commit:archivo:regla:línea).
+# Sec-WebSocket-Key de ejemplo de la RFC 6455 en el smoke test (no es un secreto); el script ya la
+# genera aleatoria en cada ejecución, esta huella solo cubre el commit histórico.
+46817214050c9459f859d4c4b553bda4a234dbbe:scripts/smoke-test.sh:generic-api-key:36

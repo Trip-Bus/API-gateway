@@ -31,9 +31,11 @@ step "0. Gateways arriba (18000 REST y WebSocket /ws, 18007 demo del Realtime en
 [ "$(curl -s -o /dev/null -w "%{http_code}" "$API/actuator/health")" = 404 ] && ok "/actuator no se expone (404)" || fail "/actuator expuesto"
 # Handshake WebSocket por el gateway, sin token: 101 (abierto) o 401/403 (lo rechaza el Realtime);
 # 404/502/503 = /ws no llega al Realtime. Con 101 la conexión queda abierta: --max-time la corta.
+# Sec-WebSocket-Key: 16 bytes aleatorios en base64 (RFC 6455), generados en cada ejecución.
+WS_KEY=$(head -c 16 /dev/urandom | base64)
 WS=$(curl -s -o /dev/null -w "%{http_code}" --http1.1 --max-time 3 "$API/ws" \
   -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
-  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' || true)
+  -H "Sec-WebSocket-Key: $WS_KEY" || true)
 case "$WS" in 101|401|403) ok "WebSocket por el gateway: GET $API/ws con upgrade → $WS";; *) fail "WebSocket por el gateway: GET $API/ws → $WS";; esac
 [ "$(curl -s -o /dev/null -w "%{http_code}" "$RT/")" = 200 ] && ok "Realtime Gateway: página de demo en $RT/" || fail "Realtime no responde en $RT"
 ok "demo-config.json apunta a $(curl -s "$RT/demo-config.json" | jq -r .apiUrl)"
