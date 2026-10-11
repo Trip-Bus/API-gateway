@@ -4,8 +4,8 @@
 #
 #  - SIN build: usa las imágenes que publica el CI de cada repo en GHCR (tag prod = rama main).
 #    Las imágenes son privadas: antes, docker login ghcr.io con un PAT read:packages (ver README).
-#  - Solo publica 18000 (API Gateway) y 18007 (Realtime/WebSocket). Bases de datos y Redis NO se
-#    publican: solo se alcanzan dentro de la red de Docker.
+#  - Solo publica 18000 (API Gateway: REST y WebSocket en /ws). El Realtime Gateway (18007), las
+#    bases de datos y Redis NO se publican: solo se alcanzan dentro de la red de Docker.
 #  - Cada secreto es obligatorio: si falta uno en .env.prod, docker compose se niega a arrancar.
 #  - Perfil Spring "prod" (SPRING_PROFILE=prod en .env.prod): sin usuarios de demostración ni Swagger.
 # =============================================================================
@@ -114,7 +114,7 @@ services:
       <<: *prod-env
       PUBLIC_API_URL: ${PUBLIC_API_URL:?Falta PUBLIC_API_URL en .env.prod}
       WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:?Falta WS_ALLOWED_ORIGINS en .env.prod}
-    ports: ["18007:18007"]
+    # Sin ports: el WebSocket entra por el API Gateway (ws(s)://<servidor>:18000/ws).
 
   api-gateway:
     <<: *restart

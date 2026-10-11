@@ -81,6 +81,12 @@ Campos de cada registro: `eventId`, `type`, `source`, `occurredAt`, `payload` (J
 
 Tópicos WebSocket: `itinerario:{id}:asientos`, `oferta:{id}:cupo`, `viaje:{id}:eventos`, `bus:{id}:posicion`.
 
+URL del WebSocket (US-030, US-031): **`ws(s)://<gateway>:18000/ws`**, a través del API Gateway (NGINX
+`location = /ws` → `realtime-gateway:18007`), igual que el REST. NGINX hace el upgrade, limita
+handshakes y conexiones abiertas por IP (20) y mantiene la conexión 75 s sin tráfico (el servidor
+envía ping cada 20 s); el JWT del handshake lo valida el Realtime Gateway. El access log de `/ws`
+no incluye la query string (`?token=`).
+
 ## API interna (servicio a servicio, nunca expuesta por el gateway)
 
 | Servicio | Endpoint | Equivalente del doc |
@@ -100,9 +106,9 @@ Tópicos WebSocket: `itinerario:{id}:asientos`, `oferta:{id}:cupo`, `viaje:{id}:
 | booking-payment-service | 18004 | booking-db 18104 → `tripbus_booking` / `booking` |
 | fleet-trip-events-service | 18005 | fleet-db 18105 → `tripbus_fleet` / `fleet` |
 | flash-offers-service | 18006 | offers-db 18106 → `tripbus_offers` / `offers` |
-| realtime-gateway | **18007** | sin BD (solo Redis) |
+| realtime-gateway | 18007 (el cliente entra por 18000 `/ws`) | sin BD (solo Redis) |
 | Redis (compartido, con contraseña) | 18100 | — |
 
 Dentro de la red de Docker cada servicio escucha en su puerto 1800x y cada PostgreSQL en 5432
-(`DB_HOST=<servicio>-db`, `DB_PORT=5432`). En QA se publican todos los puertos de la tabla; en PROD
-solo 18000 y 18007.
+(`DB_HOST=<servicio>-db`, `DB_PORT=5432`). En QA se publican todos los puertos de la tabla (18007 solo
+para depurar y la página de demo); en PROD **solo 18000** (REST y WebSocket `/ws`).

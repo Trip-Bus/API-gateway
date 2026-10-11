@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Prueba de humo extremo a extremo del MVP de TripBus, TODO a través del API Gateway.
+#  Prueba de humo extremo a extremo del MVP de TripBus, TODO a través del API Gateway (REST y /ws).
+#  El segundo argumento (18007) solo se usa para la página de demo del Realtime (publicada en QA).
 #  Requisitos: curl y jq. Uso:  ./scripts/smoke-test.sh [http://localhost:18000] [http://localhost:18007]
 #  Pensado para QA (perfil qa): usa los usuarios de demostración y el catálogo sembrado.
 #  Sin jq (p. ej. Windows), córrelo en un contenedor dentro de la red de QA (ver README).
@@ -24,10 +25,16 @@ status() { echo "${1%% *}"; }
 body()   { echo "${1#* }"; }
 login()  { body "$(req POST /auth/login '' "{\"email\":\"$1\",\"password\":\"$PASS\"}")" | jq -r .accessToken; }
 
-step "0. Gateways arriba (18000 REST, 18007 Realtime)"
+step "0. Gateways arriba (18000 REST y WebSocket /ws, 18007 demo del Realtime en QA)"
 [ "$(curl -s -o /dev/null -w "%{http_code}" "$API/health")" = 200 ] && ok "API Gateway $API/health → 200" || fail "API Gateway no responde en $API"
 [ "$(curl -s -o /dev/null -w "%{http_code}" "$API/auth/validate")" = 404 ] && ok "/auth/validate no es público (404)" || fail "/auth/validate expuesto"
 [ "$(curl -s -o /dev/null -w "%{http_code}" "$API/actuator/health")" = 404 ] && ok "/actuator no se expone (404)" || fail "/actuator expuesto"
+# Handshake WebSocket por el gateway, sin token: 101 (abierto) o 401/403 (lo rechaza el Realtime);
+# 404/502/503 = /ws no llega al Realtime. Con 101 la conexión queda abierta: --max-time la corta.
+WS=$(curl -s -o /dev/null -w "%{http_code}" --http1.1 --max-time 3 "$API/ws" \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' || true)
+case "$WS" in 101|401|403) ok "WebSocket por el gateway: GET $API/ws con upgrade → $WS";; *) fail "WebSocket por el gateway: GET $API/ws → $WS";; esac
 [ "$(curl -s -o /dev/null -w "%{http_code}" "$RT/")" = 200 ] && ok "Realtime Gateway: página de demo en $RT/" || fail "Realtime no responde en $RT"
 ok "demo-config.json apunta a $(curl -s "$RT/demo-config.json" | jq -r .apiUrl)"
 

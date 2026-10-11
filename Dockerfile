@@ -23,6 +23,7 @@ ENV GATEWAY_PORT=18000 \
     BOOKING_UPSTREAM=booking-payment-service:18004 \
     FLEET_UPSTREAM=fleet-trip-events-service:18005 \
     FLASH_OFFERS_UPSTREAM=flash-offers-service:18006 \
+    REALTIME_UPSTREAM=realtime-gateway:18007 \
     CORS_ALLOWED_ORIGIN=http://localhost:5173 \
     RATE_LIMIT_PER_IP=30r/s \
     RATE_LIMIT_PER_USER=10r/s \

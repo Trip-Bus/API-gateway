@@ -4,7 +4,7 @@
 #  Este archivo NO se usa solo: siempre se combina con el override del entorno.
 #    QA   (tu PC, compila desde el código, publica todos los puertos):
 #         scripts/qa.ps1 up      |  scripts/qa.sh up
-#    PROD (servidor, imágenes de GHCR, solo publica 18000 y 18007):
+#    PROD (servidor, imágenes de GHCR, solo publica 18000: REST y WebSocket /ws):
 #         scripts/prod.sh pull && scripts/prod.sh up
 #  Los scripts ejecutan:
 #    docker compose -p tripbus-<entorno> --env-file .env.<entorno> -f docker-compose.yml -f docker-compose.<entorno>.yml ...
@@ -278,13 +278,14 @@ services:
       identity:
         condition: service_healthy
 
-  # API Gateway (NGINX): único punto de entrada REST.
+  # API Gateway (NGINX): único punto de entrada, REST y WebSocket (/ws → realtime-gateway).
   api-gateway:
     image: ghcr.io/trip-bus/api-gateway:${TAG:-prod}
     restart: unless-stopped
     mem_limit: 128m
     environment:
       GATEWAY_PORT: 18000
+      REALTIME_UPSTREAM: realtime-gateway:18007
       CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Falta CORS_ALLOWED_ORIGIN en .env.qa o .env.prod}
       # DNS interno de Docker; valid=10s: si un servicio se reinicia con otra IP, en <=10 s se sigue.
       RESOLVER: 127.0.0.11 valid=10s ipv6=off
@@ -301,6 +302,9 @@ services:
         condition: service_healthy
       flash-offers-service:
         condition: service_healthy
+      # service_started: el REST no espera al WebSocket; el upstream se re-resuelve ("resolve").
+      realtime-gateway:
+        condition: service_started
 
   # ================================================================ observabilidad
   # Solo con el profile "observability": agrega COMPOSE_PROFILES=observability al .env del entorno.

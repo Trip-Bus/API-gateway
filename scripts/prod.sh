@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Entorno PROD (servidor): imágenes de GHCR (tag prod), solo publica 18000 y 18007.
+# Entorno PROD (servidor): imágenes de GHCR (tag prod), solo publica 18000 (REST y WebSocket /ws).
 # Uso: scripts/prod.sh pull | up | down | ps | logs [servicio] | config
 # Antes de "pull": docker login ghcr.io (las imágenes son privadas, ver README).
 set -euo pipefail
