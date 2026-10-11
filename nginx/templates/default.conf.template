@@ -1,8 +1,9 @@
 # =============================================================================
 #  TripBus — API Gateway (NGINX)
-#  Punto de entrada único REST: enrutamiento, autenticación de borde (JWT validado
-#  con identity vía auth_request), rate limiting global, CORS y logging de acceso.
-#  NO tiene lógica de negocio. El Realtime Gateway (WebSocket) NO pasa por aquí.
+#  Punto de entrada único (puerto 18000) para el REST y el WebSocket: enrutamiento, autenticación
+#  de borde (JWT validado con identity vía auth_request), rate limiting global, CORS y logging.
+#  NO tiene lógica de negocio. El WebSocket del Realtime Gateway entra por /ws y se reenvía tal cual
+#  (el JWT del handshake lo valida el propio Realtime Gateway).
 #  Las variables ${...} se reemplazan al iniciar el contenedor (envsubst).
 # =============================================================================
 
@@ -24,11 +25,28 @@ log_format tripbus_json escape=json
   '"bytes":$body_bytes_sent,"duration":$request_time,"user":"$auth_user_id",'
   '"upstream":"$upstream_addr","upstream_time":"$upstream_response_time"}';
 
+# Igual que tripbus_json pero con $uri (sin query string): el frontend manda ?token=JWT en el
+# handshake del WebSocket y el token no debe quedar en los logs.
+log_format tripbus_ws_json escape=json
+  '{"time":"$time_iso8601","request_id":"$req_id","ip":"$remote_addr",'
+  '"method":"$request_method","uri":"$uri","status":$status,'
+  '"bytes":$body_bytes_sent,"duration":$request_time,"user":"$auth_user_id",'
+  '"upstream":"$upstream_addr","upstream_time":"$upstream_response_time"}';
+
+# ---- WebSocket: "Connection: upgrade" solo si el cliente pidió el upgrade -----------
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 # ---- Rate limiting global: por IP y por usuario (token) -------------------------
 limit_req_zone $binary_remote_addr zone=per_ip:10m   rate=${RATE_LIMIT_PER_IP};
 limit_req_zone $http_authorization zone=per_user:10m rate=${RATE_LIMIT_PER_USER};
 limit_req_zone $binary_remote_addr zone=auth_ip:10m  rate=${RATE_LIMIT_AUTH};
 limit_req_status 429;
+# Conexiones WebSocket abiertas a la vez por IP (cada una cuenta mientras siga abierta).
+limit_conn_zone $binary_remote_addr zone=ws_conn_ip:10m;
+limit_conn_status 429;
 
 # ---- Resolución DNS dinámica ------------------------------------------------------
 # Sin esto NGINX resuelve los nombres UNA vez al arrancar: si un contenedor se reinicia con otra IP
@@ -43,6 +61,8 @@ upstream seat_inventory { zone up_seat_inventory 64k; server ${SEAT_INVENTORY_UP
 upstream booking        { zone up_booking 64k;        server ${BOOKING_UPSTREAM} resolve;        keepalive 16; }
 upstream fleet          { zone up_fleet 64k;          server ${FLEET_UPSTREAM} resolve;          keepalive 16; }
 upstream flash_offers   { zone up_flash_offers 64k;   server ${FLASH_OFFERS_UPSTREAM} resolve;   keepalive 32; }
+# Sin keepalive: cada WebSocket es una conexión propia ("Connection: upgrade"), no se reutiliza.
+upstream realtime       { zone up_realtime 64k;       server ${REALTIME_UPSTREAM} resolve; }
 
 server {
     listen ${GATEWAY_PORT};
@@ -174,6 +194,59 @@ server {
         proxy_pass http://flash_offers;
     }
     location @offers_public { proxy_pass http://flash_offers; }
+
+    # ======================= Realtime Gateway (WebSocket) ===========================
+    # ws(s)://<gateway>:18000/ws. Sin auth_request: el Realtime Gateway valida el JWT del handshake
+    # y responde 401/403 si no es válido; NGINX solo limita y reenvía (con la query string).
+    location = /ws {
+        # Handshakes por IP (más estricto que el general) y conexiones abiertas por IP.
+        limit_req  zone=per_ip burst=10 nodelay;
+        limit_conn ws_conn_ip 20;
+
+        # Sin la query string (?token=JWT) en los logs: access log con $uri; los rechazos por límite
+        # se registran en "info" y el error log de esta location solo en "crit", porque NGINX copia la
+        # línea de petición completa (con el token) en sus mensajes de error. El access log sigue
+        # mostrando el status y el upstream de cada handshake.
+        access_log /dev/stdout tripbus_ws_json;
+        error_log  /dev/stderr crit;
+        limit_req_log_level  info;
+        limit_conn_log_level info;
+        # Errores propios: los del server (@too_many_requests, @unavailable) loguean con $request_uri.
+        error_page 429 = @ws_too_many_requests;
+        error_page 502 503 504 = @ws_unavailable;
+
+        proxy_pass http://realtime;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Request-Id      $req_id;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Al definir proxy_set_header aquí no se heredan los del server: se vacían a mano para que el
+        # cliente no pueda inyectar una identidad.
+        proxy_set_header X-User-Id         "";
+        proxy_set_header X-User-Role       "";
+        # El servidor envía ping cada 20 s: 75 s tolera perder un par sin cortar la conexión.
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
+        proxy_buffering    off;
+    }
+    location @ws_too_many_requests {
+        access_log /dev/stdout tripbus_ws_json;
+        error_log  /dev/stderr crit;
+        default_type application/json;
+        add_header Retry-After 1 always;
+        add_header Access-Control-Allow-Origin $cors_allow_origin always;
+        add_header X-Request-Id $req_id always;
+        return 429 '{"error":{"code":"RATE_LIMITED","message":"Demasiadas solicitudes, intenta de nuevo en un momento","details":{}}}';
+    }
+    location @ws_unavailable {
+        access_log /dev/stdout tripbus_ws_json;
+        error_log  /dev/stderr crit;
+        default_type application/json;
+        return 503 '{"error":{"code":"SERVICE_UNAVAILABLE","message":"El servicio no está disponible en este momento","details":{}}}';
+    }
 
     # ======================= Nunca expuestos ========================================
     location /internal/ {

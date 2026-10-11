@@ -6,6 +6,8 @@
 #    Las carpetas se configuran en .env.qa (*_SRC); por defecto, los repos junto a API-gateway.
 #  - Publica TODOS los puertos para usar el IDE, DBeaver, redis-cli, etc.:
 #      18000 gateway · 18001-18007 servicios · 18100 Redis · 18101-18106 PostgreSQL
+#  - 18007 (Realtime) sigue publicado SOLO para depurar y la página de demo. El frontend debe usar
+#    el WebSocket a través del gateway, como en PROD: ws://localhost:18000/ws
 #  - Perfil Spring "qa" (SPRING_PROFILE=qa en .env.qa), simulador GPS y usuarios de demostración.
 # =============================================================================
 

@@ -12,7 +12,8 @@
 #
 # Jobs:
 #   secretos -> Gitleaks sobre todo el historial git.
-#   validar  -> (1) renderiza la plantilla de NGINX y corre nginx -t; (2) docker compose config -q de
+#   validar  -> (1) renderiza la plantilla de NGINX (con REALTIME_UPSTREAM del WebSocket /ws) y corre
+#               nginx -t; (2) docker compose config -q de
 #               QA y de PROD con los .example; (3) actionlint sobre los workflows.
 #   docker   -> construye la imagen, la escanea con Trivy (siempre) y, solo en push, la publica en GHCR.
 #   deploy   -> PROD por SSH: solo en push a main y con la variable DEPLOY_ENABLED=true (ver README).
@@ -91,6 +92,7 @@ jobs:
           echo "::warning::Falta el secreto DOCKERHUB_TOKEN: las imágenes se descargan sin autenticar y pueden fallar por el límite de Docker Hub."
 
       # El entrypoint de la imagen renderiza la plantilla (envsubst) y el map de CORS antes de nginx -t.
+      # REALTIME_UPSTREAM explícito (igual que en compose) para validar el upstream del WebSocket /ws.
       - name: Sintaxis de NGINX (plantilla renderizada)
         run: |
           docker build -t api-gateway:test .
@@ -99,6 +101,7 @@ jobs:
             --add-host seat-inventory-service:127.0.0.1 --add-host booking-payment-service:127.0.0.1 \
             --add-host fleet-trip-events-service:127.0.0.1 --add-host flash-offers-service:127.0.0.1 \
             --add-host realtime-gateway:127.0.0.1 \
+            -e REALTIME_UPSTREAM=realtime-gateway:18007 \
             -e CORS_ALLOWED_ORIGIN=http://localhost:5173,http://localhost:18007 \
             api-gateway:test nginx -t
 

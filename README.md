@@ -1,18 +1,18 @@
 # TripBus · API Gateway y despliegue de la plataforma
 
-Punto de entrada único REST de TripBus (NGINX) **y** repositorio de orquestación: desde aquí se
+Punto de entrada único de TripBus, REST y WebSocket (NGINX) **y** repositorio de orquestación: desde aquí se
 levanta la plataforma completa (7 microservicios + API Gateway + 6 PostgreSQL + Redis) en dos entornos,
 ambos con Docker Compose:
 
 | Entorno | Dónde | Rama | Imágenes | Puertos publicados |
 |---|---|---|---|---|
 | **QA** | tu PC | `develop` | se compilan desde el código de cada repo | todos (18000–18007, 18100–18106) |
-| **PROD** | un servidor | `main` | `ghcr.io/trip-bus/<servicio>:prod` (CI) | solo 18000 y 18007 |
+| **PROD** | un servidor | `main` | `ghcr.io/trip-bus/<servicio>:prod` (CI) | solo 18000 (REST y WebSocket `/ws`) |
 
 ```mermaid
 flowchart LR
-  C[Cliente web / móvil] -->|REST :18000| GW[API Gateway<br/>NGINX]
-  C -->|WebSocket + demo :18007| RT[Realtime Gateway]
+  C[Cliente web / móvil] -->|REST y WebSocket /ws :18000| GW[API Gateway<br/>NGINX]
+  GW -->|/ws| RT[Realtime Gateway :18007]
   GW --> ID[Identity :18001]
   GW --> CAT[Catalog :18002]
   GW --> SI[Seat Inventory :18003]
@@ -43,7 +43,7 @@ flowchart LR
 | booking-payment-service | 18004 | booking-db **18104** → `tripbus_booking` / `booking` |
 | fleet-trip-events-service | 18005 | fleet-db **18105** → `tripbus_fleet` / `fleet` |
 | flash-offers-service (repo `flash-offerts-service`) | 18006 | offers-db **18106** → `tripbus_offers` / `offers` |
-| realtime-gateway | **18007** | sin BD (solo Redis) |
+| realtime-gateway | 18007 (el cliente entra por 18000 `/ws`) | sin BD (solo Redis) |
 | Redis (compartido, con contraseña) | 18100 | — |
 
 Cada servicio tiene **su propia PostgreSQL** (ya no hay una base compartida). Dentro de Docker los
@@ -55,12 +55,12 @@ contenedores se hablan por nombre y puerto interno (`http://catalog-service:1800
 |---|---|
 | `docker-compose.yml` | **Base** común a QA y PROD: BDs, Redis, llaves JWT, 7 servicios, gateway, Prometheus (profile `observability`). Sin puertos. |
 | `docker-compose.qa.yml` | Override QA: `build` desde el código (`GIT_COMMIT=qa-local`), publica todos los puertos, simulador y usuarios demo. |
-| `docker-compose.prod.yml` | Override PROD: imágenes de GHCR, `restart: always`, solo 18000/18007, **todos los secretos obligatorios**. |
+| `docker-compose.prod.yml` | Override PROD: imágenes de GHCR, `restart: always`, solo 18000 (18007 no se publica), **todos los secretos obligatorios**. |
 | `.env.qa.example` | Valores locales de QA (versionado). Copia: `.env.qa` (ignorado por git). |
 | `.env.prod.example` | Solo marcadores `CAMBIAR_*` (versionado). Copia en el servidor: `.env.prod` (ignorado). |
 | `scripts/qa.ps1`, `scripts/qa.sh` | `up` · `down` · `ps` · `logs [servicio]` · `config` del entorno QA. |
 | `scripts/prod.ps1`, `scripts/prod.sh` | `pull` · `up` · `down` · `ps` · `logs [servicio]` · `config` del entorno PROD. |
-| `scripts/smoke-test.sh` | Prueba de humo extremo a extremo por el gateway (18000) y el realtime (18007). |
+| `scripts/smoke-test.sh` | Prueba de humo extremo a extremo por el gateway (18000, REST y handshake `/ws`) y la demo del realtime (18007, QA). |
 
 Los scripts ejecutan por ti, p. ej. en QA:
 `docker compose -p tripbus-qa --env-file .env.qa -f docker-compose.yml -f docker-compose.qa.yml up -d --build`.
@@ -96,8 +96,8 @@ propio de un servicio: comparten puertos (18100, 1810x…) y fallaría con *port
 | URL | Qué es |
 |---|---|
 | http://localhost:18000 | API Gateway (todas las APIs REST) |
-| http://localhost:18007 | Realtime Gateway + **página de demo** (buscar, mapa en vivo, comprar, tiquete QR) |
-| ws://localhost:18007/ws?token=JWT | WebSocket |
+| ws://localhost:18000/ws | **WebSocket** a través del gateway: la URL que debe usar el frontend (igual que en PROD) |
+| http://localhost:18007 | Realtime Gateway directo + **página de demo** (solo QA, para depurar; en PROD no se publica) |
 | localhost:18101…18106 / 18100 | PostgreSQL de cada servicio / Redis (para el IDE o DBeaver) |
 | http://localhost:9090 | Prometheus (con `COMPOSE_PROFILES=observability` en `.env.qa`) |
 
@@ -114,7 +114,8 @@ docker run --rm --network tripbus-qa_default -v "$PWD/scripts:/s:ro" alpine:3.20
 
 ## Preparar PROD en un servidor
 
-Ejemplo: una VM Linux (Azure for Students, 2 vCPU / 8 GB) con los puertos 18000 y 18007 abiertos.
+Ejemplo: una VM Linux (Azure for Students, 2 vCPU / 8 GB) con el puerto 18000 abierto (REST y
+WebSocket `ws(s)://<servidor>:18000/ws`; 18007 ya no se publica).
 
 ```bash
 # 1. Docker Engine + plugin compose
@@ -201,6 +202,7 @@ y que la imagen no tenga vulnerabilidades corregibles (Trivy).
 | `/telemetry/*`, `/trips/{id}/events` | Fleet + Trip Events | JWT |
 | `/trips/{id}/timeline`, `/itineraries/{id}/bus-position`, `/buses/*` | Fleet + Trip Events | públicas |
 | `/offers*` | Flash Offers | GET público, el resto JWT |
+| `/ws` (WebSocket) | Realtime Gateway | JWT validado por el Realtime en el handshake; 20 conexiones abiertas por IP |
 | `/auth/validate`, `/internal/*`, `/actuator/*` | — | **nunca** expuestas (404 JSON) |
 | `/health` | gateway | salud del propio NGINX |
 
@@ -215,6 +217,10 @@ y que la imagen no tenga vulnerabilidades corregibles (Trivy).
   `Access-Control-Allow-Origin` (sin `*` por defecto). QA: `http://localhost:5173,http://localhost:18007`.
 - **Logs** de acceso en JSON con `request_id`. Si el cliente manda `X-Request-Id` (≤ 64 caracteres
   `[A-Za-z0-9._-]`) se respeta y se propaga a los servicios; si no, NGINX genera uno.
+- **WebSocket** (`ws(s)://<gateway>:18000/ws`, upstream `REALTIME_UPSTREAM`, por defecto
+  `realtime-gateway:18007`): upgrade HTTP/1.1, timeouts de 75 s (el servidor envía ping cada 20 s),
+  sin buffering. El access log de `/ws` usa `$uri` (sin `?token=JWT`) y su error log solo registra
+  `crit`, porque NGINX copia la petición completa en los mensajes de error.
 
 ## Kubernetes (desactualizado)
 
