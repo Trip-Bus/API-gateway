@@ -210,6 +210,13 @@ services:
       PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:?Falta PAYMENT_WEBHOOK_SECRET en .env.qa o .env.prod}
       # La pasarela sandbox llama al webhook del propio servicio por la red interna.
       PAYMENT_WEBHOOK_URL: http://booking-payment-service:18004/webhooks/payment
+      # Tiquete por correo (US-033). Opcional: sin MAIL_HOST no se envía. QA usa Mailpit (override);
+      # PROD, el SMTP del proveedor que se configure en .env.prod.
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
     depends_on:
       booking-db:
         condition: service_healthy

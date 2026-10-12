@@ -6,7 +6,7 @@ ambos con Docker Compose:
 
 | Entorno | Dónde | Rama | Imágenes | Puertos publicados |
 |---|---|---|---|---|
-| **QA** | tu PC | `develop` | se compilan desde el código de cada repo | todos (18000–18007, 18100–18106) |
+| **QA** | tu PC | `develop` | se compilan desde el código de cada repo | todos (18000–18007, 18100–18106, 18025 Mailpit) |
 | **PROD** | un servidor | `main` | `ghcr.io/trip-bus/<servicio>:prod` (CI) | solo 18000 (REST y WebSocket `/ws`) |
 
 ```mermaid
@@ -54,7 +54,7 @@ contenedores se hablan por nombre y puerto interno (`http://catalog-service:1800
 | Archivo | Para qué |
 |---|---|
 | `docker-compose.yml` | **Base** común a QA y PROD: BDs, Redis, llaves JWT, 7 servicios, gateway, Prometheus (profile `observability`). Sin puertos. |
-| `docker-compose.qa.yml` | Override QA: `build` desde el código (`GIT_COMMIT=qa-local`), publica todos los puertos, simulador y usuarios demo. |
+| `docker-compose.qa.yml` | Override QA: `build` desde el código (`GIT_COMMIT=qa-local`), publica todos los puertos, simulador, usuarios demo y Mailpit (correos, 18025). |
 | `docker-compose.prod.yml` | Override PROD: imágenes de GHCR, `restart: always`, solo 18000 (18007 no se publica), **todos los secretos obligatorios**. |
 | `.env.qa.example` | Valores locales de QA (versionado). Copia: `.env.qa` (ignorado por git). |
 | `.env.prod.example` | Solo marcadores `CAMBIAR_*` (versionado). Copia en el servidor: `.env.prod` (ignorado). |
@@ -99,10 +99,16 @@ propio de un servicio: comparten puertos (18100, 1810x…) y fallaría con *port
 | ws://localhost:18000/ws | **WebSocket** a través del gateway: la URL que debe usar el frontend (igual que en PROD) |
 | http://localhost:18007 | Realtime Gateway directo + **página de demo** (solo QA, para depurar; en PROD no se publica) |
 | localhost:18101…18106 / 18100 | PostgreSQL de cada servicio / Redis (para el IDE o DBeaver) |
+| http://localhost:18025 | **Mailpit**: bandeja de los correos que envía QA (tiquetes con QR) |
 | http://localhost:9090 | Prometheus (con `COMPOSE_PROFILES=observability` en `.env.qa`) |
 
 Usuarios de demostración en QA (contraseña `DEMO_USERS_PASSWORD`, por defecto `TripBus2026`):
 `admin@tripbus.co`, `operador@tripbus.co`, `conductor@tripbus.co`, `pasajero@tripbus.co`.
+
+**Correos en QA**: abre http://localhost:18025 para ver los tiquetes enviados. Booking + Payment
+manda el tiquete con el QR a Mailpit (`mailpit:1025`), que lo guarda en memoria sin enviarlo a
+Internet; se pierde al recrear el contenedor. En PROD el correo queda apagado hasta poner el SMTP
+del proveedor en `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD` y `MAIL_FROM` de `.env.prod`.
 
 **Prueba de humo**: `./scripts/smoke-test.sh` (requiere bash, curl y jq). Sin jq en Windows, córrela
 en un contenedor dentro de la red de QA:
