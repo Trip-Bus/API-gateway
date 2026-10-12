@@ -89,6 +89,12 @@ services:
       DB_PASSWORD: ${BOOKING_DB_PASSWORD:?Falta BOOKING_DB_PASSWORD en .env.prod}
       TICKET_SECRET: ${TICKET_SECRET:?Falta TICKET_SECRET en .env.prod}
       PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:?Falta PAYMENT_WEBHOOK_SECRET en .env.prod}
+      # Correo del tiquete (US-033): NO obligatorio. Vacío = envío apagado hasta configurar un SMTP.
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
 
   fleet-trip-events-service:
     <<: *restart

@@ -9,6 +9,8 @@
 #  - 18007 (Realtime) sigue publicado SOLO para depurar y la página de demo. El frontend debe usar
 #    el WebSocket a través del gateway, como en PROD: ws://localhost:18000/ws
 #  - Perfil Spring "qa" (SPRING_PROFILE=qa en .env.qa), simulador GPS y usuarios de demostración.
+#  - Mailpit atrapa los correos (tiquetes con QR, US-033); ninguno sale a Internet:
+#      http://localhost:18025 interfaz web · SMTP interno mailpit:1025
 # =============================================================================
 
 services:
@@ -26,6 +28,15 @@ services:
     ports: ["18106:5432"]
   redis:
     ports: ["18100:6379"]
+
+  # SMTP falso de QA: guarda los correos en memoria y los muestra en http://localhost:18025.
+  mailpit:
+    image: axllent/mailpit:v1.31.3
+    restart: unless-stopped
+    mem_limit: 64m
+    environment:
+      TZ: America/Bogota
+    ports: ["18025:8025"]
 
   identity:
     build:
@@ -56,6 +67,13 @@ services:
       context: ${BOOKING_SRC:-../booking-payment-service}
       args: { GIT_COMMIT: qa-local }
     image: ghcr.io/trip-bus/booking-payment-service:qa-local
+    environment:
+      # Tiquetes por correo a Mailpit (sin usuario ni TLS).
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+    depends_on:
+      mailpit:
+        condition: service_started
     ports: ["18004:18004"]
 
   fleet-trip-events-service:
