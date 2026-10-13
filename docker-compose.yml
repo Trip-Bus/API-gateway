@@ -141,11 +141,22 @@ services:
     image: ghcr.io/trip-bus/identity:${TAG:-prod}
     environment:
       <<: *common-env
+      
       SERVER_PORT: 18001
       DB_HOST: identity-db
       DB_NAME: tripbus_identity
       DB_USERNAME: ${IDENTITY_DB_USERNAME}
       DB_PASSWORD: ${IDENTITY_DB_PASSWORD}
+
+      # identity cambió el nombre de sus variables (application.yml): DB_HOST/DB_PORT/DB_NAME en vez
+      # de DB_URL, y sus valores por defecto apuntan a su propio compose (18101/18100/18001).
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: tripbus_identity
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      SERVER_PORT: "16001"
+
       JWT_PRIVATE_KEY_PATH: /keys/private.pem
       JWT_PUBLIC_KEY_PATH: /keys/public.pem
     volumes:
