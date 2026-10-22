@@ -198,15 +198,19 @@ y que la imagen no tenga vulnerabilidades corregibles (Trivy).
 | Prefijo | Servicio | Autenticación en el borde |
 |---|---|---|
 | `/auth/login`, `/auth/register`, `/auth/password-reset/*` | Identity | públicas (rate limit estricto) |
-| `/auth/logout`, `/users/*` | Identity | JWT |
+| `/auth/logout`, `/users`, `/users/*` | Identity | JWT |
 | `/.well-known/jwks.json` | Identity | pública |
-| `/trips/search`, `/trips/cities`, `/itineraries/*`, `/routes/*` | Catalog | públicas |
+| `/trips/search`, `/trips/cities` | Catalog | públicas |
+| `/companies`, `/companies/*`, `/buses`, `/buses/*` | Catalog | JWT |
+| `/routes`, `/routes/*` | Catalog | GET público (p. ej. `/routes/{id}/stops`), POST/PUT/PATCH JWT |
+| `/itineraries` | Catalog | JWT (listado del operador) |
+| `/itineraries/*` | Catalog | GET público (detalle, seatmap, precio), POST JWT (`/itineraries/schedule`, `/cancel`) |
 | `/admin/*` | Catalog | JWT |
 | `/seats/*` | Seat Inventory | GET público, el resto JWT |
 | `/bookings*`, `/tickets/*` | Booking + Payment | JWT |
 | `/webhooks/payment` | Booking + Payment | firma HMAC (no JWT) |
 | `/telemetry/*`, `/trips/{id}/events` | Fleet + Trip Events | JWT |
-| `/trips/{id}/timeline`, `/itineraries/{id}/bus-position`, `/buses/*` | Fleet + Trip Events | públicas |
+| `/trips/{id}/timeline`, `/itineraries/{id}/bus-position`, `/buses/{id}/position` (temporal) | Fleet + Trip Events | públicas |
 | `/offers*` | Flash Offers | GET público, el resto JWT |
 | `/ws` (WebSocket) | Realtime Gateway | JWT validado por el Realtime en el handshake; 20 conexiones abiertas por IP |
 | `/auth/validate`, `/internal/*`, `/actuator/*` | — | **nunca** expuestas (404 JSON) |

@@ -104,4 +104,62 @@ step "7. Cierre de sesión (US-096)"
 [ "$(status "$(req POST /auth/logout "$OTRO" '')")" = 204 ] && ok "logout"
 [ "$(status "$(req GET /bookings "$OTRO" '')")" = 401 ] && ok "el token revocado es rechazado en el API Gateway" || fail "revocación"
 
+step "8. Sprint 2: empresas, usuarios, buses, rutas y viajes (HT-02)"
+# Si el endpoint aún no está en develop del servicio (404/405), el paso se omite con un aviso.
+skip()  { printf '  \033[33m⚠ omitido: %s\033[0m\n' "$*"; }
+nodisp() { case "$(status "$1")" in 404|405) return 0;; *) return 1;; esac; }
+SUF="$RANDOM$RANDOM"
+CO=""; BUS=""; RUTA=""; VIAJE=""
+R=$(req POST /companies "$ADMIN" "{\"nombre\":\"Smoke Transportes $SUF\",\"nit\":\"9$(printf '%08d' "$SUF" | tail -c 8)\"}")
+if nodisp "$R"; then skip "POST /companies no está disponible en catalog"
+elif [ "$(status "$R")" = 201 ]; then CO=$(body "$R" | jq -r .id); ok "ADMIN creó la empresa $CO"
+else fail "crear empresa: $R"; fi
+if [ -n "$CO" ]; then
+  R=$(req POST /users "$ADMIN" "{\"nombre\":\"Operador Smoke\",\"email\":\"smoke.op.$SUF@tripbus.co\",\"documentoIdentidad\":\"CC$SUF\",\"rol\":\"OPERADOR\",\"companyId\":\"$CO\"}")
+  if nodisp "$R"; then skip "POST /users no está disponible en identity"
+  elif [ "$(status "$R")" = 201 ]; then ok "ADMIN creó un OPERADOR de la empresa (POST /users)"
+  else fail "crear operador: $R"; fi
+fi
+R=$(req POST /users "$ADMIN" "{\"nombre\":\"Operador Fantasma\",\"email\":\"smoke.nx.$SUF@tripbus.co\",\"documentoIdentidad\":\"CX$SUF\",\"rol\":\"OPERADOR\",\"companyId\":\"00000000-0000-4000-8000-000000000000\"}")
+if nodisp "$R"; then skip "POST /users no está disponible en identity"
+elif [ "$(status "$R")" = 400 ] && [ "$(body "$R" | jq -r .error.code)" = COMPANY_NOT_FOUND ]; then ok "empresa inexistente → 400 COMPANY_NOT_FOUND"
+else fail "empresa inexistente: $R"; fi
+[ "$(status "$(req GET /internal/companies/00000000-0000-4000-8000-000000000000 '' '')")" = 404 ] && ok "/internal/companies no se expone (404)" || fail "/internal expuesto"
+
+PLACA="$(tr -dc 'A-Z' </dev/urandom | head -c 3)$(printf '%03d' $((RANDOM % 1000)))"
+R=$(req POST /buses "$OPER" "{\"placa\":\"$PLACA\",\"tipo\":\"UN_PISO\"}")
+if nodisp "$R"; then skip "POST /buses no está disponible en catalog"
+elif [ "$(status "$R")" = 201 ]; then BUS=$(body "$R" | jq -r .id); ok "OPERADOR creó el bus $PLACA"
+else fail "crear bus: $R"; fi
+R=$(req POST /routes "$OPER" '{"origen":"Bogotá","destino":"Tunja","paradas":[{"orden":1,"nombre":"Bogotá","lat":4.65,"lng":-74.1,"minutosDesdeSalida":0},{"orden":2,"nombre":"Chocontá","lat":5.15,"lng":-73.68,"minutosDesdeSalida":80},{"orden":3,"nombre":"Tunja","lat":5.53,"lng":-73.36,"minutosDesdeSalida":150}]}')
+if nodisp "$R"; then skip "POST /routes no está disponible en catalog"
+elif [ "$(status "$R")" = 201 ]; then RUTA=$(body "$R" | jq -r .id); ok "OPERADOR definió la ruta Bogotá→Tunja con 3 paradas"
+else fail "crear ruta: $R"; fi
+if [ -n "$BUS" ] && [ -n "$RUTA" ]; then
+  DIA=$(date -d '+2 days' +%F 2>/dev/null || date -v+2d +%F)
+  R=$(req POST /itineraries "$OPER" "{\"routeId\":\"$RUTA\",\"busId\":\"$BUS\",\"fechaSalida\":\"${DIA}T15:00:00Z\",\"precioBase\":65000}")
+  if nodisp "$R"; then skip "POST /itineraries no está disponible en catalog"
+  elif [ "$(status "$R")" = 201 ]; then
+    VIAJE=$(body "$R" | jq -r .itineraryId); ok "OPERADOR programó el viaje $VIAJE el $DIA"
+    for i in $(seq 1 10); do
+      EN=$(body "$(req GET "/trips/search?origin=Bogota&destination=Tunja&date=$DIA" '' '')" | jq -r --arg it "$VIAJE" '[.[] | select(.itineraryId==$it)] | length')
+      [ "$EN" = 1 ] && break; sleep 1
+    done
+    [ "$EN" = 1 ] && ok "el viaje aparece en GET /trips/search" || fail "el viaje $VIAJE no aparece en la búsqueda"
+    R=$(req POST /itineraries "$OPER" "{\"routeId\":\"$RUTA\",\"busId\":\"$BUS\",\"fechaSalida\":\"${DIA}T16:00:00Z\",\"precioBase\":65000}")
+    [ "$(status "$R")" = 409 ] && [ "$(body "$R" | jq -r .error.code)" = BUS_SCHEDULE_CONFLICT ] \
+      && ok "viaje cruzado del mismo bus → 409 BUS_SCHEDULE_CONFLICT" || fail "cruce de viajes: $R"
+  else fail "programar viaje: $R"; fi
+else skip "programar viaje (falta el bus o la ruta)"; fi
+if [ -n "$RUTA" ]; then
+  [ "$(status "$(req GET "/routes/$RUTA/stops" '' '')")" = 200 ] && ok "GET /routes/{id}/stops funciona sin token" || fail "paradas públicas"
+else
+  [ "$(status "$(req GET "/routes/$(body "$(req GET "/itineraries/$IT" '' '')" | jq -r .routeId)/stops" '' '')")" = 200 ] \
+    && ok "GET /routes/{id}/stops funciona sin token" || fail "paradas públicas"
+fi
+[ "$(status "$(req POST /routes '' '{}')")" = 401 ] && ok "POST /routes sin token → 401" || fail "POST /routes sin token no fue rechazado"
+CORS=$(curl -s -o /dev/null -D - -X OPTIONS "$API/companies" -H 'Origin: http://localhost:5173' \
+  -H 'Access-Control-Request-Method: PATCH' | tr -d '\r' | grep -i '^access-control-allow-methods:' || true)
+echo "$CORS" | grep -q PATCH && ok "OPTIONS (preflight PATCH) → ${CORS}" || fail "CORS sin PATCH: ${CORS:-sin header}"
+
 printf '\n\033[32mTodo el flujo del MVP funciona de extremo a extremo.\033[0m\n'

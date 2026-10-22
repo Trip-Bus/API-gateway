@@ -140,7 +140,7 @@ services:
     <<: *java-service
     image: ghcr.io/trip-bus/identity:${TAG:-prod}
     environment:
-      <<: *common-env
+      <<: [*common-env, *internal-token]
       SERVER_PORT: 18001
       DB_HOST: identity-db
       DB_NAME: tripbus_identity
@@ -148,6 +148,8 @@ services:
       DB_PASSWORD: ${IDENTITY_DB_PASSWORD}
       JWT_PRIVATE_KEY_PATH: /keys/private.pem
       JWT_PUBLIC_KEY_PATH: /keys/public.pem
+      # Identity valida con Catalog que la empresa exista al crear un OPERADOR.
+      CATALOG_URL: http://catalog-service:18002
     volumes:
       - jwt-keys:/keys:ro
     depends_on:

@@ -73,7 +73,7 @@ server {
 
     # ---- CORS para el frontend (solo a los orígenes de CORS_ALLOWED_ORIGIN) --------
     add_header Access-Control-Allow-Origin   $cors_allow_origin always;
-    add_header Access-Control-Allow-Methods  "GET, POST, PUT, DELETE, OPTIONS" always;
+    add_header Access-Control-Allow-Methods  "GET, POST, PUT, PATCH, DELETE, OPTIONS" always;
     add_header Access-Control-Allow-Headers  "Authorization, Content-Type, Idempotency-Key, X-Request-Id" always;
     add_header Access-Control-Expose-Headers "X-Request-Id, Idempotent-Replayed, Retry-After" always;
     add_header Access-Control-Max-Age        600 always;
@@ -147,15 +147,18 @@ server {
         return 404 '{"error":{"code":"NOT_FOUND","message":"Ruta no encontrada en el API Gateway","details":{}}}';
     }
     location = /auth/logout   { auth_request /_auth; proxy_pass http://identity; }
+    # = /users: listado (GET) y alta de usuarios por el ADMIN (POST).
+    location = /users         { auth_request /_auth; proxy_pass http://identity; }
     location /users/          { auth_request /_auth; proxy_pass http://identity; }
     location = /.well-known/jwks.json { proxy_pass http://identity; }
 
     # ======================= Fleet + Trip Events ====================================
-    # (regex: tienen prioridad sobre los prefijos /trips/ e /itineraries/ de Catalog)
+    # (regex: tienen prioridad sobre los prefijos /trips/, /itineraries/ y /buses/ de Catalog)
     location ~ ^/trips/[^/]+/timeline$            { proxy_pass http://fleet; }
     location ~ ^/trips/[^/]+/events$              { auth_request /_auth; proxy_pass http://fleet; }
     location ~ ^/itineraries/[^/]+/bus-position$  { proxy_pass http://fleet; }
-    location /buses/                              { proxy_pass http://fleet; }
+    # Temporal: fleet la retira en otra tarea; el resto de /buses/ ya es de Catalog.
+    location ~ ^/buses/[^/]+/position$            { proxy_pass http://fleet; }
     location /telemetry/ {
         auth_request /_auth;
         limit_req zone=per_user burst=100 nodelay;
@@ -164,9 +167,35 @@ server {
 
     # ======================= Catalog ================================================
     location /trips/       { proxy_pass http://catalog; }
-    location /itineraries/ { proxy_pass http://catalog; }
-    location /routes/      { proxy_pass http://catalog; }
     location /admin/       { auth_request /_auth; proxy_pass http://catalog; }
+    # Empresas y buses: todo exige token (el rol lo valida Catalog).
+    location = /companies  { auth_request /_auth; proxy_pass http://catalog; }
+    location /companies/   { auth_request /_auth; proxy_pass http://catalog; }
+    location = /buses      { auth_request /_auth; proxy_pass http://catalog; }
+    location /buses/       { auth_request /_auth; proxy_pass http://catalog; }
+    # Rutas: GET público (p. ej. /routes/{id}/stops, que usan fleet y el frontend); el resto exige token.
+    location = /routes {
+        error_page 418 = @catalog_public;
+        if ($request_method = GET) { return 418; }
+        auth_request /_auth;
+        proxy_pass http://catalog;
+    }
+    location /routes/ {
+        error_page 418 = @catalog_public;
+        if ($request_method = GET) { return 418; }
+        auth_request /_auth;
+        proxy_pass http://catalog;
+    }
+    # Viajes: el listado del operador exige token; detalle, seatmap y precio (GET) son públicos;
+    # programar (/itineraries/schedule) y cancelar exigen token.
+    location = /itineraries { auth_request /_auth; proxy_pass http://catalog; }
+    location /itineraries/ {
+        error_page 418 = @catalog_public;
+        if ($request_method = GET) { return 418; }
+        auth_request /_auth;
+        proxy_pass http://catalog;
+    }
+    location @catalog_public { proxy_pass http://catalog; }
 
     # ======================= Seat Inventory =========================================
     # GET (ver mapa/disponibilidad) es público; retener/extender/liberar exige token.
@@ -249,7 +278,8 @@ server {
     }
 
     # ======================= Nunca expuestos ========================================
-    location /internal/ {
+    # ^~: ninguna regex puede ganarle (catalog expone /internal/companies/{id} solo para identity).
+    location ^~ /internal/ {
         default_type application/json;
         return 404 '{"error":{"code":"NOT_FOUND","message":"Ruta no encontrada en el API Gateway","details":{}}}';
     }
