@@ -162,4 +162,92 @@ CORS=$(curl -s -o /dev/null -D - -X OPTIONS "$API/companies" -H 'Origin: http://
   -H 'Access-Control-Request-Method: PATCH' | tr -d '\r' | grep -i '^access-control-allow-methods:' || true)
 echo "$CORS" | grep -q PATCH && ok "OPTIONS (preflight PATCH) → ${CORS}" || fail "CORS sin PATCH: ${CORS:-sin header}"
 
+step "9. Sprint 2 · operación en ruta: conductor, rastreo y posición en vivo (HT-02)"
+# Al final se libera la asignación para que otra ejecución pueda volver a asignar al conductor.
+jwt_sub() { local p; p=$(echo "$1" | cut -d. -f2 | tr '_-' '/+'); while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done; echo "$p" | base64 -d 2>/dev/null | jq -r .sub; }
+nuevo_bus() { # imprime el id del bus nuevo, o vacío si POST /buses no está disponible
+  local r; r=$(req POST /buses "$OPER" "{\"placa\":\"$(tr -dc 'A-Z' </dev/urandom | head -c 3)$(printf '%03d' $((RANDOM % 1000)))\",\"tipo\":\"UN_PISO\"}")
+  [ "$(status "$r")" = 201 ] && body "$r" | jq -r .id || true
+}
+programar() { # bus salida → "status body" de POST /itineraries
+  req POST /itineraries "$OPER" "{\"routeId\":\"$RUTA\",\"busId\":\"$1\",\"fechaSalida\":\"$2\",\"precioBase\":65000}"
+}
+asignar() { # viaje → "status body"; reintenta mientras fleet aún no recibe el viaje (ItineraryPublished es asíncrono)
+  local r i; for i in $(seq 1 15); do
+    r=$(req PUT "/trips/$1/driver" "$OPER" "{\"conductorId\":\"$COND_ID\",\"rol\":\"PRINCIPAL\"}")
+    [ "$(body "$r" | jq -r '.error.code? // empty' 2>/dev/null)" = TRIP_NOT_FOUND ] || break; sleep 1
+  done; echo "$r"
+}
+COND_ID=$(jwt_sub "$COND"); V1=""; ASIGNADO=""; RASTREO=""
+B1=$(nuevo_bus); B2=$(nuevo_bus)
+if [ -z "$RUTA" ] && [ -n "$B1" ]; then
+  R=$(req POST /routes "$OPER" '{"origen":"Bogotá","destino":"Tunja","paradas":[{"orden":1,"nombre":"Bogotá","lat":4.65,"lng":-74.1,"minutosDesdeSalida":0},{"orden":2,"nombre":"Tunja","lat":5.53,"lng":-73.36,"minutosDesdeSalida":150}]}')
+  [ "$(status "$R")" = 201 ] && RUTA=$(body "$R" | jq -r .id)
+fi
+if [ -n "$B1" ] && [ -n "$B2" ] && [ -n "$RUTA" ]; then
+  R=$(programar "$B1" "$(date -u -d '+10 min' +%FT%TZ 2>/dev/null || date -u -v+10M +%FT%TZ)")
+  if nodisp "$R"; then skip "POST /itineraries no está disponible en catalog"
+  elif [ "$(status "$R")" = 201 ]; then V1=$(body "$R" | jq -r .itineraryId); ok "OPERADOR programó el viaje $V1 que sale en 10 minutos"
+  else fail "programar viaje en 10 min: $R"; fi
+else skip "crear bus, ruta y viaje (POST /buses o /routes no está disponible en catalog)"; fi
+
+if [ -n "$V1" ]; then
+  R=$(asignar "$V1")
+  if nodisp "$R" && [ "$(body "$R" | jq -r '.error.code? // empty' 2>/dev/null)" != TRIP_NOT_FOUND ]; then skip "PUT /trips/{id}/driver no está disponible en fleet"
+  elif [ "$(status "$R")" = 200 ]; then ASIGNADO=1; ok "conductor@tripbus.co asignado como PRINCIPAL"
+  else fail "asignar conductor: $R"; fi
+fi
+if [ -n "$ASIGNADO" ]; then
+  R=$(programar "$B2" "$(date -u -d '+30 min' +%FT%TZ 2>/dev/null || date -u -v+30M +%FT%TZ)")
+  [ "$(status "$R")" = 201 ] || fail "programar viaje cruzado: $R"
+  R=$(asignar "$(body "$R" | jq -r .itineraryId)")
+  [ "$(status "$R")" = 409 ] && [ "$(body "$R" | jq -r .error.code)" = DRIVER_SCHEDULE_CONFLICT ] \
+    && ok "mismo conductor en un viaje cruzado → 409 DRIVER_SCHEDULE_CONFLICT" || fail "cruce del conductor: $R"
+
+  R=$(req GET /driver/trips "$COND" '')
+  if nodisp "$R"; then skip "GET /driver/trips no está disponible en fleet"
+  else
+    [ "$(body "$R" | jq -r --arg v "$V1" '[.[] | select(.itineraryId==$v)] | length')" = 1 ] && ok "GET /driver/trips muestra el viaje" || fail "mis viajes: $R"
+    R=$(req GET /driver/trips/active "$COND" '')
+    [ "$(body "$R" | jq -r .itineraryId)" = "$V1" ] && ok "GET /driver/trips/active devuelve el viaje" || fail "viaje activo: $R"
+  fi
+
+  R=$(req POST /driver/tracking/start "$COND" "{\"itineraryId\":\"$V1\"}")
+  if nodisp "$R"; then skip "POST /driver/tracking/start no está disponible en fleet (pasos 4 a 7 omitidos)"
+  elif [ "$(status "$R")" = 200 ] || [ "$(status "$R")" = 201 ]; then RASTREO=1; ok "CONDUCTOR inició el rastreo"
+  else fail "iniciar rastreo: $R"; fi
+fi
+if [ -n "$RASTREO" ]; then
+  loc() { req POST /driver/location "$COND" "{\"itineraryId\":\"$V1\",\"lat\":4.65,\"lng\":-74.1,\"precision\":$1,\"velocidad\":0,\"timestamp\":\"$(date -u +%FT%TZ)\"}"; }
+  R=$(loc 8)
+  [ "$(status "$R")" = 202 ] && ok "POST /driver/location en la primera parada → 202" || fail "ubicación: $R"
+  R=$(loc 500)
+  [ "$(body "$R" | jq -r .aceptada)" = false ] && ok "lectura con precision 500 → aceptada=false" || fail "precisión mala aceptada: $R"
+  for i in $(seq 1 10); do
+    BP=$(body "$(req GET "/itineraries/$V1/bus-position" '' '')")
+    [ "$(echo "$BP" | jq -r .estadoRastreo)" = ACTIVO ] && [ "$(echo "$BP" | jq -r .posicion.lat)" = 4.65 ] && break; sleep 1
+  done
+  [ "$(echo "$BP" | jq -r .estadoRastreo)" = ACTIVO ] && [ "$(echo "$BP" | jq -r .posicion.lat)" = 4.65 ] \
+    && ok "bus-position sin token: estadoRastreo ACTIVO y posición (4.65, -74.1)" || fail "bus-position: $BP"
+
+  # WebSocket anónimo: connect sin token + subscribe; el servidor responde con el snapshot del tema.
+  if command -v websocat >/dev/null 2>&1; then
+    SNAP=$( (printf '{"type":"connect"}\n{"type":"subscribe","topic":"viaje:%s:posicion"}\n' "$V1"; sleep 4) \
+      | timeout 6 websocat -t "${API/http/ws}/ws" 2>/dev/null | grep '"type":"snapshot"' | head -1 || true)
+    [ -n "$SNAP" ] && ok "WebSocket viaje:{id}:posicion sin token → snapshot" || fail "WebSocket: no llegó el snapshot"
+  else skip "WebSocket viaje:{id}:posicion (instala websocat para probar la suscripción)"; fi
+
+  R=$(req POST /driver/tracking/stop "$COND" "{\"itineraryId\":\"$V1\"}")
+  [ "$(status "$R")" = 200 ] || [ "$(status "$R")" = 204 ] || fail "detener rastreo: $R"
+  for i in $(seq 1 5); do E=$(body "$(req GET "/itineraries/$V1/bus-position" '' '')" | jq -r .estadoRastreo); [ "$E" = EN_PAUSA ] && break; sleep 1; done
+  [ "$E" = EN_PAUSA ] && ok "tracking/stop → estadoRastreo EN_PAUSA" || fail "estado tras detener: $E"
+  R=$(loc 8)
+  [ "$(status "$R")" = 409 ] && [ "$(body "$R" | jq -r .error.code)" = TRACKING_NOT_ACTIVE ] \
+    && ok "ubicación con el rastreo en pausa → 409 TRACKING_NOT_ACTIVE" || fail "ubicación en pausa: $R"
+fi
+R=$(req GET /driver/trips "$PAX" '')
+if nodisp "$R"; then skip "GET /driver/trips no está disponible en fleet"
+else [ "$(status "$R")" = 403 ] && ok "PASAJERO en /driver/trips → 403" || fail "pasajero en /driver/trips: $R"; fi
+[ -n "$ASIGNADO" ] && req DELETE "/trips/$V1/driver/PRINCIPAL" "$OPER" '' >/dev/null || true
+
 printf '\n\033[32mTodo el flujo del MVP funciona de extremo a extremo.\033[0m\n'
