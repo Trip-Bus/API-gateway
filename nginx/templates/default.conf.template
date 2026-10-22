@@ -156,10 +156,25 @@ server {
     # (regex: tienen prioridad sobre los prefijos /trips/, /itineraries/ y /buses/ de Catalog)
     location ~ ^/trips/[^/]+/timeline$            { proxy_pass http://fleet; }
     location ~ ^/trips/[^/]+/events$              { auth_request /_auth; proxy_pass http://fleet; }
+    # Asignación de conductores (PUT/GET /trips/{id}/driver, DELETE /trips/{id}/driver/{rol}).
+    location ~ ^/trips/[^/]+/driver(/.*)?$        { auth_request /_auth; proxy_pass http://fleet; }
     location ~ ^/itineraries/[^/]+/bus-position$  { proxy_pass http://fleet; }
-    # Temporal: fleet la retira en otra tarea; el resto de /buses/ ya es de Catalog.
+    # Temporal (se retiran en el Sprint 5): /buses/{id}/position y /telemetry/; el resto de /buses/ es de Catalog.
     location ~ ^/buses/[^/]+/position$            { proxy_pass http://fleet; }
     location /telemetry/ {
+        auth_request /_auth;
+        limit_req zone=per_user burst=100 nodelay;
+        proxy_pass http://fleet;
+    }
+    # App del conductor: mis viajes, rastreo y ubicación. El celular envía cada 5–10 s y el lote puede
+    # llegar de golpe al recuperar señal: mismo límite por usuario que /telemetry/.
+    location /driver/ { auth_request /_auth; proxy_pass http://fleet; }
+    location = /driver/location {
+        auth_request /_auth;
+        limit_req zone=per_user burst=100 nodelay;
+        proxy_pass http://fleet;
+    }
+    location = /driver/location/batch {
         auth_request /_auth;
         limit_req zone=per_user burst=100 nodelay;
         proxy_pass http://fleet;

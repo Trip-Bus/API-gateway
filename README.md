@@ -209,7 +209,10 @@ y que la imagen no tenga vulnerabilidades corregibles (Trivy).
 | `/seats/*` | Seat Inventory | GET público, el resto JWT |
 | `/bookings*`, `/tickets/*` | Booking + Payment | JWT |
 | `/webhooks/payment` | Booking + Payment | firma HMAC (no JWT) |
-| `/telemetry/*`, `/trips/{id}/events` | Fleet + Trip Events | JWT |
+| `/telemetry/*` (temporal, se retira en el Sprint 5), `/trips/{id}/events` | Fleet + Trip Events | JWT |
+| `/trips/{id}/driver`, `/trips/{id}/driver/*` | Fleet + Trip Events | JWT (asignar conductores: OPERADOR/ADMIN) |
+| `/driver/*` (`/driver/trips`, `/driver/tracking/*`) | Fleet + Trip Events | JWT (CONDUCTOR) |
+| `/driver/location`, `/driver/location/batch` | Fleet + Trip Events | JWT, rate limit por usuario (como `/telemetry/`) |
 | `/trips/{id}/timeline`, `/itineraries/{id}/bus-position`, `/buses/{id}/position` (temporal) | Fleet + Trip Events | públicas |
 | `/offers*` | Flash Offers | GET público, el resto JWT |
 | `/ws` (WebSocket) | Realtime Gateway | JWT validado por el Realtime en el handshake; 20 conexiones abiertas por IP |

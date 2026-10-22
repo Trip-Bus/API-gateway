@@ -236,6 +236,8 @@ services:
       DB_USERNAME: ${FLEET_DB_USERNAME}
       DB_PASSWORD: ${FLEET_DB_PASSWORD}
       CATALOG_URL: http://catalog-service:18002
+      # Fleet valida con Identity que el conductor asignado exista, esté activo y sea de la empresa.
+      IDENTITY_URL: http://identity:18001
       SIMULATOR_ENABLED: ${SIMULATOR_ENABLED:-false}
     depends_on:
       fleet-db:
