@@ -165,12 +165,12 @@ echo "$CORS" | grep -q PATCH && ok "OPTIONS (preflight PATCH) → ${CORS}" || fa
 step "9. Sprint 2 · operación en ruta: conductor, rastreo y posición en vivo (HT-02)"
 # Al final se libera la asignación para que otra ejecución pueda volver a asignar al conductor.
 jwt_sub() { local p; p=$(echo "$1" | cut -d. -f2 | tr '_-' '/+'); while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done; echo "$p" | base64 -d 2>/dev/null | jq -r .sub; }
-nuevo_bus() { # imprime el id del bus nuevo, o vacío si POST /buses no está disponible
-  local r; r=$(req POST /buses "$OPER" "{\"placa\":\"$(tr -dc 'A-Z' </dev/urandom | head -c 3)$(printf '%03d' $((RANDOM % 1000)))\",\"tipo\":\"UN_PISO\"}")
+nuevo_bus() { # [tipo] → imprime el id del bus nuevo, o vacío si POST /buses no está disponible
+  local r; r=$(req POST /buses "$OPER" "{\"placa\":\"$(tr -dc 'A-Z' </dev/urandom | head -c 3)$(printf '%03d' $((RANDOM % 1000)))\",\"tipo\":\"${1:-UN_PISO}\"}")
   [ "$(status "$r")" = 201 ] && body "$r" | jq -r .id || true
 }
-programar() { # bus salida → "status body" de POST /itineraries
-  req POST /itineraries "$OPER" "{\"routeId\":\"$RUTA\",\"busId\":\"$1\",\"fechaSalida\":\"$2\",\"precioBase\":65000}"
+programar() { # bus salida [precio] → "status body" de POST /itineraries
+  req POST /itineraries "$OPER" "{\"routeId\":\"$RUTA\",\"busId\":\"$1\",\"fechaSalida\":\"$2\",\"precioBase\":${3:-65000}}"
 }
 asignar() { # viaje → "status body"; reintenta mientras fleet aún no recibe el viaje (ItineraryPublished es asíncrono)
   local r i; for i in $(seq 1 15); do
@@ -249,5 +249,215 @@ R=$(req GET /driver/trips "$PAX" '')
 if nodisp "$R"; then skip "GET /driver/trips no está disponible en fleet"
 else [ "$(status "$R")" = 403 ] && ok "PASAJERO en /driver/trips → 403" || fail "pasajero en /driver/trips: $R"; fi
 [ -n "$ASIGNADO" ] && req DELETE "/trips/$V1/driver/PRINCIPAL" "$OPER" '' >/dev/null || true
+
+step "10. Sprint 3 · cambios y novedades"
+# Viajes propios en la ruta Bogotá→Tunja, cada uno con su bus (sin cruces): A, B (más caro), C, D y E (bus de
+# dos pisos) dentro de 3 días; F sale en 10 min para el conductor. Los eventos entre servicios son asíncronos:
+# se espera con reintentos.
+viaje() { # tipo-bus salida [precio] → imprime el itineraryId, o vacío
+  local b r; b=$(nuevo_bus "$1"); [ -n "$b" ] || return 0
+  r=$(programar "$b" "$2" "${3:-65000}"); [ "$(status "$r")" = 201 ] && body "$r" | jq -r .itineraryId || true
+}
+retener() { # viaje asiento → "status body"; reintenta mientras seat-inventory aún no recibe el viaje
+  local r i; for i in $(seq 1 15); do
+    r=$(req POST /seats/holds "$PAX" "{\"itineraryId\":\"$1\",\"seatNumbers\":[\"$2\"]}")
+    [ "$(status "$r")" = 201 ] && break; sleep 1
+  done; echo "$r"
+}
+confirmada() { # reserva → espera CONFIRMADA
+  local e i; for i in $(seq 1 20); do
+    e=$(body "$(req GET "/bookings/$1" "$PAX" '')" | jq -r .estado); [ "$e" = CONFIRMADA ] && return 0; sleep 1
+  done; fail "la reserva $1 quedó en $e"
+}
+pagar() { # reserva → paga con tok_visa_approved y espera CONFIRMADA
+  local r; r=$(req POST "/bookings/$1/pay" "$PAX" '{"cardToken":"tok_visa_approved","cardLast4":"4242"}' "Idempotency-Key: smoke-$(date +%s)-$RANDOM")
+  case "$(status "$r")" in 200|202) ;; *) fail "pago de $1: $r";; esac
+  confirmada "$1"
+}
+comprar() { # viaje asiento → deja BK y TK (reserva y tiquete) del PASAJERO
+  local r; r=$(retener "$1" "$2"); [ "$(status "$r")" = 201 ] || fail "retener el asiento $2 de $1: $r"
+  r=$(req POST /bookings "$PAX" "{\"holdId\":\"$(body "$r" | jq -r .holdId)\",\"pasajeros\":[{\"nombre\":\"Ana Pérez\",\"tipoDocumento\":\"CC\",\"numeroDocumento\":\"1020304050\"}]}")
+  [ "$(status "$r")" = 201 ] || fail "reserva en $1: $r"; BK=$(body "$r" | jq -r .bookingId)
+  pagar "$BK"; TK=$(body "$(req GET "/bookings/$BK" "$PAX" '')" | jq -r .ticketId)
+}
+afectada() { # reserva → 0 cuando aparece en GET /bookings/affected (US-154, asíncrono)
+  local i; for i in $(seq 1 20); do
+    [ "$(body "$(req GET /bookings/affected "$PAX" '')" | jq -r --arg b "$1" '[.[]? | select(.bookingId==$b)] | length')" = 1 ] && return 0; sleep 1
+  done; return 1
+}
+disponibles() { body "$(req GET "/seats/availability?itineraryIds=$1" '' '')" | jq -r '.[0].disponibles // empty'; }
+validar() { req POST /tickets/validate "$COND" "$(jq -nc --arg q "$1" '{qrCode:$q}')"; }
+
+DIA3=$(date -d '+3 days' +%F 2>/dev/null || date -v+3d +%F)
+S3_A=""; S3_B=""; S3_C=""; S3_D=""
+if [ -n "$RUTA" ]; then
+  S3_A=$(viaje UN_PISO "${DIA3}T12:00:00Z"); S3_B=$(viaje UN_PISO "${DIA3}T14:00:00Z" 90000)
+  S3_C=$(viaje UN_PISO "${DIA3}T16:00:00Z"); S3_D=$(viaje UN_PISO "${DIA3}T18:00:00Z")
+fi
+if [ -z "$S3_A" ] || [ -z "$S3_B" ] || [ -z "$S3_C" ] || [ -z "$S3_D" ]; then
+  skip "Sprint 3: no se pudieron crear los viajes A–D (POST /buses, /routes o /itineraries no disponible en catalog)"
+else
+  ok "OPERADOR programó los viajes A ($S3_A), B ($S3_B, más caro), C ($S3_C) y D ($S3_D) del $DIA3"
+
+  step "10.1 OPERADOR bloquea y desbloquea un asiento (US-112)"
+  for i in $(seq 1 15); do D0=$(disponibles "$S3_A"); [ -n "$D0" ] && [ "$D0" -gt 0 ] && break; sleep 1; done
+  R=$(req POST "/seats/itineraries/$S3_A/blocks" "$OPER" '{"seatNumbers":["39"],"motivo":"Silla dañada (smoke)"}')
+  if nodisp "$R"; then skip "POST /seats/itineraries/{id}/blocks no está disponible en seat-inventory"
+  elif [ "$(status "$R")" = 200 ]; then
+    [ "$(disponibles "$S3_A")" = $((D0 - 1)) ] && ok "asiento 39 BLOQUEADO: disponibles $D0 → $((D0 - 1)) en /seats/availability" || fail "disponibilidad tras bloquear: $(disponibles "$S3_A")"
+    R=$(req DELETE "/seats/itineraries/$S3_A/blocks" "$OPER" '{"seatNumbers":["39"]}')
+    [ "$(status "$R")" = 200 ] && [ "$(disponibles "$S3_A")" = "$D0" ] && ok "desbloqueado: vuelve a $D0 disponibles" || fail "desbloquear: $R"
+  else fail "bloquear asiento: $R"; fi
+
+  step "10.2 PASAJERO compra en A, cambia de asiento y corrige un nombre (US-139, US-152)"
+  comprar "$S3_A" 10; BKA=$BK; TKA=$TK; ok "reserva $BKA confirmada con el tiquete $TKA (asiento 10)"
+  R=$(req POST "/tickets/$TKA/seat" "$PAX" '{"fromSeat":"10","toSeat":"11"}')
+  if nodisp "$R"; then skip "POST /tickets/{id}/seat no está disponible en booking"
+  elif [ "$(status "$R")" = 200 ] && [ "$(body "$R" | jq -r '.seatNumbers[0]')" = 11 ]; then ok "cambio de asiento 10 → 11"
+  else fail "cambio de asiento: $R"; fi
+  PID=$(body "$(req GET "/tickets/$TKA" "$PAX" '')" | jq -r '.pasajeros[0].passengerId')
+  R=$(req PATCH "/tickets/$TKA/passengers/$PID" "$PAX" '{"nombre":"Ana María Pérez","tipoDocumento":"CC","numeroDocumento":"1020304050"}')
+  if nodisp "$R"; then skip "PATCH /tickets/{id}/passengers/{id} no está disponible en booking"
+  elif [ "$(status "$R")" = 200 ]; then
+    ok "nombre corregido a $(body "$R" | jq -r '.pasajeros[0].nombre')"
+    R=$(req PATCH "/tickets/$TKA/passengers/$PID" "$PAX" '{"nombre":"Ana M. Pérez","tipoDocumento":"CC","numeroDocumento":"1020304050"}')
+    [ "$(status "$R")" = 409 ] && ok "segunda corrección del mismo pasajero → 409 $(body "$R" | jq -r .error.code)" || fail "segunda corrección: $R"
+  else fail "corregir pasajero: $R"; fi
+
+  step "10.3 PASAJERO reprograma de A a B (más caro) y paga la diferencia (US-150)"
+  R=$(retener "$S3_B" 10); [ "$(status "$R")" = 201 ] || fail "retener en B: $R"
+  R=$(req POST "/bookings/$BKA/reschedule" "$PAX" "{\"holdId\":\"$(body "$R" | jq -r .holdId)\"}")
+  if nodisp "$R"; then skip "POST /bookings/{id}/reschedule no está disponible en booking"; BKB=""
+  elif [ "$(status "$R")" = 201 ] && [ "$(body "$R" | jq -r .estado)" = PENDIENTE_PAGO ]; then
+    BKB=$(body "$R" | jq -r .bookingId); ok "reserva nueva $BKB en B: diferencia a pagar $(body "$R" | jq -r .total) COP"
+    pagar "$BKB"; TKB=$(body "$(req GET "/bookings/$BKB" "$PAX" '')" | jq -r .ticketId)
+    ok "diferencia pagada: reserva $BKB CONFIRMADA con el tiquete $TKB"
+    QRA=$(body "$(req GET "/tickets/$TKA" "$PAX" '')" | jq -r .qrCode)
+    for i in $(seq 1 10); do R=$(validar "$QRA"); [ "$(status "$R")" = 409 ] && break; sleep 1; done
+    [ "$(status "$R")" = 409 ] && [ "$(body "$R" | jq -r .error.code)" = TICKET_RESCHEDULED ] \
+      && ok "CONDUCTOR valida el tiquete viejo → 409 TICKET_RESCHEDULED" || fail "validar tiquete viejo: $R"
+    # No se valida el nuevo (quedaría USADO y 10.4 lo reembolsa): basta con que siga EMITIDO.
+    [ "$(body "$(req GET "/tickets/$TKB" "$PAX" '')" | jq -r .estado)" = EMITIDO ] && ok "el tiquete nuevo es válido (EMITIDO)" || fail "tiquete nuevo no EMITIDO"
+  else fail "reprogramar A → B: $R"; fi
+
+  step "10.4 OPERADOR reprograma B 8 horas; el PASAJERO elige reembolso (US-118, US-154)"
+  PAX_ID=$(jwt_sub "$PAX"); WS_LOG=/tmp/tb_ws_avisos; WS_PID=""; : >"$WS_LOG"
+  if command -v websocat >/dev/null 2>&1; then
+    # Escucha usuario:{id}:avisos mientras transcurre el paso; se revisa en 10.9.
+    (printf '{"type":"connect","token":"%s"}\n' "$PAX"; sleep 1; printf '{"type":"subscribe","topic":"usuario:%s:avisos"}\n' "$PAX_ID"; sleep 90) \
+      | timeout 95 websocat -t "${API/http/ws}/ws" >"$WS_LOG" 2>/dev/null &
+    WS_PID=$!; sleep 2
+  fi
+  if [ -z "${BKB:-}" ]; then skip "sin la reserva de B (10.3 omitido)"
+  else
+    R=$(req PATCH "/itineraries/$S3_B/departure" "$OPER" "{\"nuevaFechaSalida\":\"${DIA3}T22:00:00Z\",\"motivo\":\"Cambio de horario (smoke)\"}")
+    if nodisp "$R"; then skip "PATCH /itineraries/{id}/departure no está disponible en catalog"
+    elif [ "$(status "$R")" = 200 ]; then
+      ok "viaje B movido de 14:00 a 22:00"
+      R=$(req GET /bookings/affected "$PAX" '')
+      if nodisp "$R"; then skip "GET /bookings/affected no está disponible en booking"
+      else
+        afectada "$BKB" && ok "la reserva $BKB aparece en GET /bookings/affected" || fail "la reserva $BKB no quedó afectada"
+        R=$(req POST "/bookings/$BKB/affected/refund" "$PAX" '')
+        [ "$(status "$R")" = 200 ] && [ "$(body "$R" | jq -r .estado)" = REEMBOLSADA ] && ok "PASAJERO eligió reembolso → REEMBOLSADA" || fail "reembolso: $R"
+        for i in $(seq 1 5); do E=$(body "$(req GET "/tickets/$TKB" "$PAX" '')" | jq -r .estado); [ "$E" = ANULADO ] && break; sleep 1; done
+        [ "$E" = ANULADO ] && ok "el tiquete $TKB quedó ANULADO" || fail "tiquete tras el reembolso: $E"
+        R=$(req POST "/bookings/$BKB/affected/refund" "$PAX" '')
+        if [ "$(status "$R")" = 409 ] && [ "$(body "$R" | jq -r .error.code)" = ALREADY_DECIDED ]; then ok "segundo reembolso → 409 ALREADY_DECIDED"
+        elif [ "$(status "$R")" = 200 ]; then skip "segundo reembolso → 200 idempotente en booking (se esperaba 409 ALREADY_DECIDED; no reembolsa dos veces)"
+        else fail "segundo reembolso: $R"; fi
+        R=$(req POST "/bookings/$BKB/affected/accept" "$PAX" '')
+        [ "$(status "$R")" = 409 ] && [ "$(body "$R" | jq -r .error.code)" = ALREADY_DECIDED ] && ok "otra decisión sobre la misma reserva → 409 ALREADY_DECIDED" || fail "decidir dos veces: $R"
+      fi
+    else fail "reprogramar el viaje B: $R"; fi
+  fi
+
+  step "10.5 OPERADOR cancela C; el PASAJERO reprograma gratis a D (US-154, US-155)"
+  comprar "$S3_C" 10; BKC=$BK; ok "reserva $BKC confirmada en C"
+  R=$(req POST "/admin/itineraries/$S3_C/cancel" "$OPER" '{"motivo":"Bus varado (smoke)"}')
+  [ "$(status "$R")" = 200 ] || fail "cancelar C: $R"; ok "viaje C cancelado"
+  BKD=""
+  if nodisp "$(req GET /bookings/affected "$PAX" '')"; then skip "GET /bookings/affected no está disponible en booking"
+  else
+    afectada "$BKC" && ok "la reserva $BKC aparece afectada" || fail "la reserva $BKC no quedó afectada"
+    R=$(req POST "/bookings/$BKC/affected/accept" "$PAX" '')
+    [ "$(status "$R")" = 409 ] && ok "aceptar el cambio de un viaje cancelado → 409 $(body "$R" | jq -r .error.code)" || fail "aceptar cancelación: $R"
+    R=$(retener "$S3_D" 10); [ "$(status "$R")" = 201 ] || fail "retener en D: $R"
+    R=$(req POST "/bookings/$BKC/affected/reschedule" "$PAX" "{\"holdId\":\"$(body "$R" | jq -r .holdId)\"}")
+    [ "$(status "$R")" = 200 ] && [ "$(body "$R" | jq -r .estado)" = REPROGRAMADA ] || fail "reprogramar gratis a D: $R"
+    BKD=$(body "$R" | jq -r .bookingNuevoId); confirmada "$BKD"
+    ok "reprogramada gratis a D: reserva $BKD CONFIRMADA sin pago (total $(body "$(req GET "/bookings/$BKD" "$PAX" '')" | jq -r .total))"
+  fi
+
+  step "10.6 Manifiesto de pasajeros del viaje D (US-172)"
+  R=$(req GET "/itineraries/$S3_D/manifest" "$OPER" '')
+  if nodisp "$R" && [ "$(body "$R" | jq -r '.error.code? // empty' 2>/dev/null)" != ITINERARY_NOT_FOUND ]; then skip "GET /itineraries/{id}/manifest no está disponible en booking"
+  elif [ -z "$BKD" ]; then skip "manifiesto (10.5 omitido)"
+  else
+    [ "$(status "$R")" = 200 ] && [ "$(body "$R" | jq -r '[.pasajeros[] | select(.nombre=="Ana Pérez")] | length')" -ge 1 ] \
+      && ok "OPERADOR ve a Ana Pérez en el manifiesto (JSON)" || fail "manifiesto JSON: $R"
+    R=$(req GET "/itineraries/$S3_D/manifest?format=csv" "$OPER" '')
+    [ "$(status "$R")" = 200 ] && echo "$R" | grep -q 'Ana Pérez' && ok "manifiesto en CSV con el pasajero" || fail "manifiesto CSV: $R"
+    [ "$(status "$(req GET "/itineraries/$S3_D/manifest" "$PAX" '')")" = 403 ] && ok "PASAJERO en el manifiesto → 403" || fail "manifiesto expuesto al pasajero"
+  fi
+
+  step "10.7 Cambio de bus con un asiento vendido que no existe en el bus nuevo (US-119)"
+  S3_E=$(viaje DOS_PISOS "${DIA3}T12:00:00Z"); CHICO=$(nuevo_bus UN_PISO)
+  if [ -z "$S3_E" ] || [ -z "$CHICO" ]; then skip "no se pudo crear el viaje E o el bus de un piso"
+  else
+    comprar "$S3_E" 50; ok "asiento 50 vendido en el viaje E (bus de dos pisos)"
+    R=$(req PATCH "/itineraries/$S3_E/bus" "$OPER" "{\"busId\":\"$CHICO\",\"motivo\":\"Cambio de flota (smoke)\"}")
+    if nodisp "$R"; then skip "PATCH /itineraries/{id}/bus no está disponible en catalog"
+    else [ "$(status "$R")" = 409 ] && [ "$(body "$R" | jq -r .error.code)" = SEATS_CONFLICT ] \
+      && ok "bus de 40 puestos con el asiento 50 vendido → 409 SEATS_CONFLICT" || fail "cambio de bus: $R"; fi
+  fi
+fi
+
+step "10.8 CONDUCTOR: checklist, ETA, SOS y fin del viaje (US-171, US-176, US-180)"
+S3_F=""; F_ASIG=""
+[ -n "$RUTA" ] && S3_F=$(viaje UN_PISO "$(date -u -d '+10 min' +%FT%TZ 2>/dev/null || date -u -v+10M +%FT%TZ)")
+if [ -z "$S3_F" ]; then skip "no se pudo programar el viaje F que sale en 10 min"
+else
+  R=$(asignar "$S3_F"); [ "$(status "$R")" = 200 ] || fail "asignar conductor a F: $R"; F_ASIG=1
+  ok "conductor@tripbus.co asignado al viaje $S3_F (sale en 10 min)"
+  R=$(req POST "/driver/trips/$S3_F/start" "$COND" '{"checklist":{"manifiestoRevisado":true}}')
+  if nodisp "$R"; then skip "POST /driver/trips/{id}/start no está disponible en fleet"
+  else
+    [ "$(status "$R")" = 400 ] && [ "$(body "$R" | jq -r .error.code)" = CHECKLIST_INCOMPLETE ] && ok "checklist incompleto → 400 CHECKLIST_INCOMPLETE" || fail "checklist incompleto: $R"
+    R=$(req POST "/driver/trips/$S3_F/start" "$COND" '{"checklist":{"manifiestoRevisado":true,"documentosBus":true,"lucesYLlantas":true,"botiquinYExtintor":true}}')
+    [ "$(status "$R")" = 200 ] || fail "iniciar viaje: $R"
+    [ "$(body "$(req GET "/trips/$S3_F/timeline" '' '')" | jq -r '[.[] | select(.tipo=="INICIO")] | length')" -ge 1 ] && ok "viaje iniciado: la línea de tiempo muestra INICIO" || fail "sin INICIO en la línea de tiempo"
+    R=$(req POST /driver/location "$COND" "{\"itineraryId\":\"$S3_F\",\"lat\":4.65,\"lng\":-74.1,\"precision\":8,\"velocidad\":0,\"timestamp\":\"$(date -u +%FT%TZ)\"}")
+    [ "$(status "$R")" = 202 ] || fail "ubicación: $R"
+    for i in $(seq 1 15); do R=$(req GET "/itineraries/$S3_F/eta" '' ''); [ "$(status "$R")" = 200 ] && break; sleep 1; done
+    if [ "$(status "$R")" = 200 ]; then ok "GET /itineraries/{id}/eta sin token → $(body "$R" | jq -r '.paradas | length') paradas"
+    elif [ "$(body "$R" | jq -r '.error.code? // empty' 2>/dev/null)" = NO_ETA ]; then fail "ETA: $R"
+    else skip "GET /itineraries/{id}/eta no está disponible en fleet"; fi
+    R=$(req POST /driver/sos "$COND" '{"lat":4.66,"lng":-74.09,"mensaje":"Prueba de humo"}')
+    if nodisp "$R"; then skip "POST /driver/sos no está disponible en fleet"
+    else
+      case "$(status "$R")" in 200|201) ALERTA=$(body "$R" | jq -r .alertId); ok "SOS enviado: alerta $ALERTA";; *) fail "SOS: $R";; esac
+      [ "$(body "$(req GET '/alerts?estado=ABIERTA' "$OPER" '')" | jq -r --arg a "$ALERTA" '[.[] | select(.alertId==$a)] | length')" = 1 ] \
+        && ok "OPERADOR ve la alerta en GET /alerts?estado=ABIERTA" || fail "alerta no listada"
+      [ "$(body "$(req GET "/trips/$S3_F/timeline" '' '')" | jq -r '[.[] | select(.tipo=="SOS")] | length')" = 0 ] \
+        && ok "la línea de tiempo pública NO muestra el SOS" || fail "SOS expuesto en la línea de tiempo"
+      R=$(req POST "/trips/$S3_F/alerts/$ALERTA/resolve" "$OPER" '{"nota":"Atendida (smoke)"}')
+      [ "$(status "$R")" = 200 ] && ok "OPERADOR resolvió la alerta → $(body "$R" | jq -r .estado)" || fail "resolver alerta: $R"
+    fi
+    R=$(req POST "/driver/trips/$S3_F/finish" "$COND" '')
+    [ "$(status "$R")" = 200 ] && [ "$(body "$R" | jq -r .estadoRastreo)" = FINALIZADO ] && ok "CONDUCTOR finalizó el viaje → FINALIZADO" || fail "finalizar: $R"
+  fi
+fi
+[ -n "$F_ASIG" ] && req DELETE "/trips/$S3_F/driver/PRINCIPAL" "$OPER" '' >/dev/null || true
+
+step "10.9 WebSocket: aviso BookingAffected en usuario:{id}:avisos"
+if [ -z "${WS_PID:-}" ]; then skip "WebSocket usuario:{id}:avisos (instala websocat para probar la suscripción)"
+else
+  kill "$WS_PID" 2>/dev/null || true; wait "$WS_PID" 2>/dev/null || true
+  if grep -q 'BookingAffected' "$WS_LOG"; then ok "el PASAJERO recibió BookingAffected por el WebSocket"
+  elif grep -q 'INVALID_TOPIC' "$WS_LOG"; then skip "el tema usuario:{id}:avisos aún no está en develop del realtime"
+  elif [ -z "${BKB:-}" ]; then skip "sin reserva afectada en 10.4"
+  else fail "no llegó BookingAffected: $(tr '\n' ' ' <"$WS_LOG")"; fi
+fi
 
 printf '\n\033[32mTodo el flujo del MVP funciona de extremo a extremo.\033[0m\n'

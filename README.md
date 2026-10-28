@@ -204,16 +204,19 @@ y que la imagen no tenga vulnerabilidades corregibles (Trivy).
 | `/companies`, `/companies/*`, `/buses`, `/buses/*` | Catalog | JWT |
 | `/routes`, `/routes/*` | Catalog | GET público (p. ej. `/routes/{id}/stops`), POST/PUT/PATCH JWT |
 | `/itineraries` | Catalog | JWT (listado del operador) |
-| `/itineraries/*` | Catalog | GET público (detalle, seatmap, precio), POST JWT (`/itineraries/schedule`, `/cancel`) |
+| `/itineraries/*` | Catalog | GET público (detalle, seatmap, precio, `/{id}/changes`), POST/PATCH JWT (`/itineraries/schedule`, `/{id}/departure`, `/{id}/bus`) |
+| `/itineraries/{id}/manifest` | Booking + Payment | JWT (manifiesto de pasajeros, JSON o `?format=csv`) |
 | `/admin/*` | Catalog | JWT |
-| `/seats/*` | Seat Inventory | GET público, el resto JWT |
-| `/bookings*`, `/tickets/*` | Booking + Payment | JWT |
+| `/seats/*` | Seat Inventory | GET público, el resto JWT (incluye `/seats/itineraries/{id}/blocks`) |
+| `/bookings*`, `/tickets/*` | Booking + Payment | JWT (incluye `/bookings/affected`, `/bookings/{id}/reschedule`, `/bookings/{id}/affected/*`) |
 | `/webhooks/payment` | Booking + Payment | firma HMAC (no JWT) |
 | `/telemetry/*` (temporal, se retira en el Sprint 5), `/trips/{id}/events` | Fleet + Trip Events | JWT |
 | `/trips/{id}/driver`, `/trips/{id}/driver/*` | Fleet + Trip Events | JWT (asignar conductores: OPERADOR/ADMIN) |
-| `/driver/*` (`/driver/trips`, `/driver/tracking/*`) | Fleet + Trip Events | JWT (CONDUCTOR) |
+| `/trips/{id}/finish`, `/trips/{id}/alerts*`, `/alerts`, `/alerts/*` | Fleet + Trip Events | JWT (OPERADOR/ADMIN) |
+| `/driver/*` (`/driver/trips`, `/driver/trips/{id}/start`, `/driver/trips/{id}/finish`, `/driver/tracking/*`) | Fleet + Trip Events | JWT (CONDUCTOR) |
 | `/driver/location`, `/driver/location/batch` | Fleet + Trip Events | JWT, rate limit por usuario (como `/telemetry/`) |
-| `/trips/{id}/timeline`, `/itineraries/{id}/bus-position`, `/buses/{id}/position` (temporal) | Fleet + Trip Events | públicas |
+| `/driver/sos` | Fleet + Trip Events | JWT, solo el límite general (un SOS nunca recibe 429 por el límite de `/driver/location`) |
+| `/trips/{id}/timeline`, `/itineraries/{id}/bus-position`, `/itineraries/{id}/eta`, `/buses/{id}/position` (temporal) | Fleet + Trip Events | públicas |
 | `/offers*` | Flash Offers | GET público, el resto JWT |
 | `/ws` (WebSocket) | Realtime Gateway | JWT validado por el Realtime en el handshake; 20 conexiones abiertas por IP |
 | `/auth/validate`, `/internal/*`, `/actuator/*` | — | **nunca** expuestas (404 JSON) |
