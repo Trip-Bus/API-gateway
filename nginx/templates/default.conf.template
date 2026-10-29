@@ -158,7 +158,16 @@ server {
     location ~ ^/trips/[^/]+/events$              { auth_request /_auth; proxy_pass http://fleet; }
     # Asignación de conductores (PUT/GET /trips/{id}/driver, DELETE /trips/{id}/driver/{rol}).
     location ~ ^/trips/[^/]+/driver(/.*)?$        { auth_request /_auth; proxy_pass http://fleet; }
+    # Inicio/fin y alertas del viaje para el operador (US-171, US-176).
+    location ~ ^/trips/[^/]+/(finish|alerts)(/.*)?$ { auth_request /_auth; proxy_pass http://fleet; }
     location ~ ^/itineraries/[^/]+/bus-position$  { proxy_pass http://fleet; }
+    # Hora estimada por parada (US-180): pública, como bus-position.
+    location ~ ^/itineraries/[^/]+/eta$           { proxy_pass http://fleet; }
+    # Manifiesto de pasajeros (US-172): es de Booking, no de Catalog.
+    location ~ ^/itineraries/[^/]+/manifest$      { auth_request /_auth; proxy_pass http://booking; }
+    # Alertas de la empresa (US-176).
+    location = /alerts  { auth_request /_auth; proxy_pass http://fleet; }
+    location /alerts/   { auth_request /_auth; proxy_pass http://fleet; }
     # Temporal (se retiran en el Sprint 5): /buses/{id}/position y /telemetry/; el resto de /buses/ es de Catalog.
     location ~ ^/buses/[^/]+/position$            { proxy_pass http://fleet; }
     location /telemetry/ {
@@ -179,6 +188,8 @@ server {
         limit_req zone=per_user burst=100 nodelay;
         proxy_pass http://fleet;
     }
+    # SOS (US-176): nunca debe recibir 429 por el límite de /driver/location; solo el límite general.
+    location = /driver/sos { auth_request /_auth; proxy_pass http://fleet; }
 
     # ======================= Catalog ================================================
     location /trips/       { proxy_pass http://catalog; }
