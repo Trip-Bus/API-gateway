@@ -75,7 +75,7 @@ server {
     add_header Access-Control-Allow-Origin   $cors_allow_origin always;
     add_header Access-Control-Allow-Methods  "GET, POST, PUT, PATCH, DELETE, OPTIONS" always;
     add_header Access-Control-Allow-Headers  "Authorization, Content-Type, Idempotency-Key, X-Request-Id" always;
-    add_header Access-Control-Expose-Headers "X-Request-Id, Idempotent-Replayed, Retry-After" always;
+    add_header Access-Control-Expose-Headers "X-Request-Id, Idempotent-Replayed, Retry-After, X-Total-Count" always;
     add_header Access-Control-Max-Age        600 always;
     add_header Vary                          Origin always;
     add_header X-Request-Id                  $req_id always;
@@ -140,6 +140,9 @@ server {
     # ======================= Identity ===============================================
     location = /auth/register { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
     location = /auth/login    { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
+    location = /auth/refresh   { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
+    location = /auth/verify-email { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
+    location = /auth/verify-email/resend { auth_request /_auth; proxy_pass http://identity; }
     location /auth/password-reset/ { limit_req zone=auth_ip burst=5 nodelay; proxy_pass http://identity; }
     # Solo para uso interno del gateway (location /_auth): desde fuera no existe.
     location = /auth/validate {
@@ -194,6 +197,7 @@ server {
     # ======================= Catalog ================================================
     location /trips/       { proxy_pass http://catalog; }
     location /admin/       { auth_request /_auth; proxy_pass http://catalog; }
+    location /operator/    { auth_request /_auth; proxy_pass http://catalog; }
     # Empresas y buses: todo exige token (el rol lo valida Catalog).
     location = /companies  { auth_request /_auth; proxy_pass http://catalog; }
     location /companies/   { auth_request /_auth; proxy_pass http://catalog; }
@@ -232,15 +236,39 @@ server {
         limit_req zone=per_user burst=20 nodelay;
         proxy_pass http://seat_inventory;
     }
+    # Operaciones privadas aunque sean GET; van antes de la regla pública general.
+    location ~ ^/seats/itineraries/[^/]+/(occupancy|waitlist)$ {
+        auth_request /_auth;
+        limit_req zone=per_user burst=20 nodelay;
+        proxy_pass http://seat_inventory;
+    }
+    location /seats/waitlist/ {
+        auth_request /_auth;
+        limit_req zone=per_user burst=20 nodelay;
+        proxy_pass http://seat_inventory;
+    }
     location @seats_public { proxy_pass http://seat_inventory; }
 
     # ======================= Booking + Payment ======================================
     location /bookings { auth_request /_auth; proxy_pass http://booking; }
     location /tickets/ { auth_request /_auth; proxy_pass http://booking; }
+    location /box-office/ { auth_request /_auth; proxy_pass http://booking; }
+    location /reports/ { auth_request /_auth; proxy_pass http://booking; }
+    location /payments/ {
+        error_page 418 = @booking_public;
+        if ($request_method = GET) { return 418; }
+        auth_request /_auth;
+        proxy_pass http://booking;
+    }
+    location /sandbox/ { proxy_pass http://booking; }
+    location @booking_public { proxy_pass http://booking; }
     # Webhook de la pasarela: se autentica con su firma HMAC, no con JWT.
     location = /webhooks/payment { proxy_pass http://booking; }
 
     # ======================= Flash Offers ===========================================
+    location /operator/offers { auth_request /_auth; proxy_pass http://flash_offers; }
+    location /offers/follows { auth_request /_auth; proxy_pass http://flash_offers; }
+    location ~ ^/offers/[^/]+/metrics$ { auth_request /_auth; proxy_pass http://flash_offers; }
     location /offers {
         error_page 418 = @offers_public;
         if ($request_method = GET) { return 418; }
@@ -249,6 +277,9 @@ server {
         proxy_pass http://flash_offers;
     }
     location @offers_public { proxy_pass http://flash_offers; }
+
+    # ======================= Fleet ===================================================
+    location /fleet/ { auth_request /_auth; proxy_pass http://fleet; }
 
     # ======================= Realtime Gateway (WebSocket) ===========================
     # ws(s)://<gateway>:18000/ws. Sin auth_request: el Realtime Gateway valida el JWT del handshake

@@ -460,4 +460,5 @@ else
   else fail "no llegó BookingAffected: $(tr '\n' ' ' <"$WS_LOG")"; fi
 fi
 
-printf '\n\033[32mTodo el flujo del MVP funciona de extremo a extremo.\033[0m\n'
+source "$(dirname "$0")/smoke-sprint4.sh"
+printf '\n\033[32mSmoke test MVP + Sprint 4 terminado.\033[0m\n'

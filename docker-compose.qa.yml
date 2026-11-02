@@ -46,6 +46,11 @@ services:
     environment:
       # El perfil qa de identity crea los usuarios de demostración con esta contraseña.
       DEMO_USERS_PASSWORD: ${DEMO_USERS_PASSWORD:?Falta DEMO_USERS_PASSWORD en .env.qa}
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+    depends_on:
+      mailpit:
+        condition: service_started
     ports: ["18001:18001"]
 
   catalog-service:
