@@ -156,6 +156,10 @@ services:
       MAIL_USERNAME: ${MAIL_USERNAME:-}
       MAIL_PASSWORD: ${MAIL_PASSWORD:-}
       MAIL_FROM: ${MAIL_FROM:-}
+      # Verificación en dos pasos (US-106): llave que cifra los secretos TOTP (obligatoria en qa y prod;
+      # sin ella identity no arranca) y roles que deben activarla antes de usar la API (vacío = nadie).
+      MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Falta MFA_ENCRYPTION_KEY en .env.qa o .env.prod}
+      MFA_REQUIRED_ROLES: ${MFA_REQUIRED_ROLES:-}
     volumes:
       - jwt-keys:/keys:ro
     depends_on:

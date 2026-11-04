@@ -17,7 +17,7 @@ elif [ "$(status "$R")" = 201 ]; then
   if [ -z "$MID" ]; then skip "correo de verificación no encontrado en $MAILPIT"
   else
     MSG=$(curl -fsS "$MAILPIT/api/v1/message/$MID" 2>/dev/null || true)
-    VT=$(echo "$MSG" | grep -oE '[?&]token=[^&" ]+' | head -n1 | sed 's/^[^=]*=//' || true)
+    VT=$(echo "$MSG" | grep -oE '[?&]token=[A-Za-z0-9_-]+' | head -n1 | sed 's/^[^=]*=//' || true)
     if [ -z "$VT" ]; then skip "no se pudo extraer token del correo de Mailpit"
     else
       R=$(req POST /auth/verify-email '' "{\"token\":\"$VT\"}")
@@ -69,7 +69,7 @@ R=$(req POST /admin/commission-validities "$ADMIN" "{\"porcentaje\":5,\"vigenteD
 if nodisp "$R"; then skip "vigencia de comisión aún no está en develop de catalog"; elif [ "$(status "$R")" = 200 ] || [ "$(status "$R")" = 201 ]; then ok "ADMIN agregó vigencia de comisión"; else fail "comisión: $R"; fi
 
 step "11.3 Ofertas: CRUD operador, showcase, follows y métricas"
-R=$(req POST /operator/offers "$OPER" "{\"itineraryId\":\"$IT\",\"seatNumbers\":$LIBRES,\"precioOferta\":45000,\"cupo\":2,\"inicio\":\"$(date -u +%FT%TZ)\",\"fin\":\"$FIN\"}")
+R=$(req POST /operator/offers "$OPER" "{\"itineraryId\":\"$IT\",\"seatNumbers\":$LIBRES,\"precioOferta\":45000,\"cupo\":2,\"inicio\":\"$(en_seg 120)\",\"fin\":\"$FIN\"}")
 S4_OF=""
 if nodisp "$R"; then skip "gestión /operator/offers aún no está en develop de flash-offers"
 elif [ "$(status "$R")" = 201 ]; then
@@ -78,12 +78,14 @@ elif [ "$(status "$R")" = 201 ]; then
   if nodisp "$R"; then skip "edición de ofertas aún no está disponible"; elif [ "$(status "$R")" = 200 ]; then ok "oferta editada"; else fail "editar oferta: $R"; fi
   R=$(req POST "/operator/offers/$S4_OF/duplicate" "$OPER" '')
   if nodisp "$R"; then skip "duplicado de ofertas aún no está disponible"; elif [ "$(status "$R")" = 200 ] || [ "$(status "$R")" = 201 ]; then ok "oferta duplicada"; else fail "duplicar oferta: $R"; fi
-  R=$(req POST /operator/offers "$OPER" "{\"itineraryId\":\"$IT\",\"seatNumbers\":$LIBRES,\"precioOferta\":6500,\"cupo\":2,\"inicio\":\"$(date -u +%FT%TZ)\",\"fin\":\"$FIN\"}")
+  R=$(req POST /operator/offers "$OPER" "{\"itineraryId\":\"$IT\",\"seatNumbers\":$LIBRES,\"precioOferta\":6500,\"cupo\":2,\"inicio\":\"$(en_seg 120)\",\"fin\":\"$FIN\"}")
   if [ "$(status "$R")" = 400 ] && [ "$(body "$R" | jq -r .error.code)" = INVALID_DISCOUNT ]; then ok "90 % → 400 INVALID_DISCOUNT"; elif nodisp "$R"; then skip "validación de descuento aún no disponible"; else fail "descuento 90%: $R"; fi
 else fail "crear oferta: $R"; fi
 R=$(req GET /offers/showcase '' ''); if nodisp "$R"; then skip "/offers/showcase aún no está en develop"; elif [ "$(status "$R")" = 200 ]; then ok "showcase público responde sin token"; else fail "showcase: $R"; fi
 R=$(req POST /offers/follows '' '{"itineraryId":"smoke"}'); if [ "$(status "$R")" = 401 ]; then ok "/offers/follows sin token → 401"; elif nodisp "$R"; then skip "/offers/follows aún no está en develop"; else fail "follows sin token: $R"; fi
 if [ -n "$S4_OF" ]; then R=$(req GET "/offers/$S4_OF/metrics" "$OPER" ''); if nodisp "$R"; then skip "métricas aún no están en develop"; elif [ "$(status "$R")" = 200 ]; then ok "métricas de oferta para OPERADOR"; else fail "métricas: $R"; fi; fi
+
+cerrar_ofertas_de "$IT"   # las ofertas de 11.3 (y su duplicado) no deben bloquear la próxima ejecución
 
 step "11.4 Lista de espera"
 R=$(req GET "/seats/itineraries/$IT/occupancy" "$OPER" '')
