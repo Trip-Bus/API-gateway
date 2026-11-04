@@ -6,7 +6,10 @@ FROM nginx:1.29.8-alpine
 
 # Parches de seguridad de los paquetes de Alpine publicados después de la imagen base (Trivy los
 # exige: CRITICAL/HIGH con corrección disponible). No cambia la versión de NGINX.
-RUN apk upgrade --no-cache
+# APK_CACHE_BUST: el CI pasa un valor por ejecución para que la caché de capas (type=gha) no reutilice
+# un "apk upgrade" viejo y la imagen salga con parches ya publicados (p. ej. curl 8.22 → 8.23).
+ARG APK_CACHE_BUST=local
+RUN echo "apk upgrade: $APK_CACHE_BUST" && apk upgrade --no-cache
 
 COPY nginx/templates/ /etc/nginx/templates/
 # Corre después de 20-envsubst-on-templates.sh: genera el map de orígenes CORS permitidos.

@@ -140,7 +140,7 @@ services:
     <<: *java-service
     image: ghcr.io/trip-bus/identity:${TAG:-prod}
     environment:
-      <<: *common-env
+      <<: [*common-env, *internal-token]
       SERVER_PORT: 18001
       DB_HOST: identity-db
       DB_NAME: tripbus_identity
@@ -148,6 +148,18 @@ services:
       DB_PASSWORD: ${IDENTITY_DB_PASSWORD}
       JWT_PRIVATE_KEY_PATH: /keys/private.pem
       JWT_PUBLIC_KEY_PATH: /keys/public.pem
+      # Identity valida con Catalog que la empresa exista al crear un OPERADOR.
+      CATALOG_URL: http://catalog-service:18002
+      FRONTEND_URL: ${FRONTEND_URL:?Falta FRONTEND_URL en .env.qa o .env.prod}
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      # Verificación en dos pasos (US-106): llave que cifra los secretos TOTP (obligatoria en qa y prod;
+      # sin ella identity no arranca) y roles que deben activarla antes de usar la API (vacío = nadie).
+      MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Falta MFA_ENCRYPTION_KEY en .env.qa o .env.prod}
+      MFA_REQUIRED_ROLES: ${MFA_REQUIRED_ROLES:-}
     volumes:
       - jwt-keys:/keys:ro
     depends_on:
@@ -206,6 +218,7 @@ services:
       CATALOG_URL: http://catalog-service:18002
       SEAT_INVENTORY_URL: http://seat-inventory-service:18003
       FLASH_OFFERS_URL: http://flash-offers-service:18006
+      FRONTEND_URL: ${FRONTEND_URL:?Falta FRONTEND_URL en .env.qa o .env.prod}
       TICKET_SECRET: ${TICKET_SECRET:?Falta TICKET_SECRET en .env.qa o .env.prod}
       PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:?Falta PAYMENT_WEBHOOK_SECRET en .env.qa o .env.prod}
       # La pasarela sandbox llama al webhook del propio servicio por la red interna.
@@ -234,6 +247,8 @@ services:
       DB_USERNAME: ${FLEET_DB_USERNAME}
       DB_PASSWORD: ${FLEET_DB_PASSWORD}
       CATALOG_URL: http://catalog-service:18002
+      # Fleet valida con Identity que el conductor asignado exista, esté activo y sea de la empresa.
+      IDENTITY_URL: http://identity:18001
       SIMULATOR_ENABLED: ${SIMULATOR_ENABLED:-false}
     depends_on:
       fleet-db:

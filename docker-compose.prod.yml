@@ -59,7 +59,7 @@ services:
     <<: *restart
     image: ghcr.io/trip-bus/identity:${TAG:-prod}
     environment:
-      <<: *prod-env
+      <<: [*prod-env, *prod-internal]
       DB_USERNAME: ${IDENTITY_DB_USERNAME:?Falta IDENTITY_DB_USERNAME en .env.prod}
       DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?Falta IDENTITY_DB_PASSWORD en .env.prod}
 

@@ -115,7 +115,7 @@ en un contenedor dentro de la red de QA:
 
 ```bash
 docker run --rm --network tripbus-qa_default -v "$PWD/scripts:/s:ro" alpine:3.20 sh -c \
-  "apk add -q bash curl jq coreutils && bash /s/smoke-test.sh http://api-gateway:18000 http://realtime-gateway:18007"
+  "apk add -q bash curl jq coreutils && MAILPIT_URL=http://mailpit:8025 bash /s/smoke-test.sh http://api-gateway:18000 http://realtime-gateway:18007"
 ```
 
 ## Preparar PROD en un servidor
@@ -182,6 +182,13 @@ y que la imagen no tenga vulnerabilidades corregibles (Trivy).
 | `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` | secret | IP/dominio, usuario y llave **privada** SSH del servidor. |
 | `GHCR_USER`, `GHCR_TOKEN` | secret | Usuario de GitHub y PAT con `read:packages` para el `docker login ghcr.io` del servidor. |
 
+### Variables de entorno nuevas
+
+| Variable | Servicios | QA | PROD |
+|---|---|---|---|
+| `FRONTEND_URL` | Identity, Booking | `http://localhost:5173` | Obligatoria: URL pública del frontend (configúrala en `.env.prod`; Compose falla si falta). |
+| `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM` | Identity y Booking | Identity/Booking usan Mailpit (`mailpit:1025`); credenciales vacías | SMTP opcional; valores vacíos desactivan el envío de correo. |
+
 ### Activar el deploy
 
 1. Prepara el servidor (sección anterior) y verifica que `scripts/prod.sh up` funcione a mano.
@@ -197,17 +204,36 @@ y que la imagen no tenga vulnerabilidades corregibles (Trivy).
 
 | Prefijo | Servicio | Autenticación en el borde |
 |---|---|---|
-| `/auth/login`, `/auth/register`, `/auth/password-reset/*` | Identity | públicas (rate limit estricto) |
-| `/auth/logout`, `/users/*` | Identity | JWT |
+| `/auth/login`, `/auth/register`, `/auth/password-reset/*`, `/auth/refresh`, `/auth/verify-email` | Identity | públicas (rate limit estricto) |
+| `/auth/verify-email/resend` | Identity | JWT |
+| `/auth/logout`, `/users`, `/users/*` (incluye `/users/me`, `/users/me/password`, `/users/{id}/lock`) | Identity | JWT |
 | `/.well-known/jwks.json` | Identity | pública |
-| `/trips/search`, `/trips/cities`, `/itineraries/*`, `/routes/*` | Catalog | públicas |
+| `/trips/search`, `/trips/search/companies`, `/trips/cities` | Catalog | públicas |
+| `/companies`, `/companies/*`, `/buses`, `/buses/*` | Catalog | JWT |
+| `/routes`, `/routes/*` | Catalog | GET público (p. ej. `/routes/{id}/stops`), POST/PUT/PATCH JWT |
+| `/itineraries` | Catalog | JWT (listado del operador) |
+| `/itineraries/*` | Catalog | GET público (detalle, seatmap, precio, `/{id}/changes`), POST/PATCH JWT (`/itineraries/schedule`, `/{id}/departure`, `/{id}/bus`) |
+| `/itineraries/{id}/manifest` | Booking + Payment | JWT (manifiesto de pasajeros, JSON o `?format=csv`) |
 | `/admin/*` | Catalog | JWT |
-| `/seats/*` | Seat Inventory | GET público, el resto JWT |
-| `/bookings*`, `/tickets/*` | Booking + Payment | JWT |
+| `/operator/` | Catalog | JWT (incluye panel `/operator/trips`) |
+| `/seats/*` | Seat Inventory | GET público salvo ocupación y lista de espera; el resto JWT |
+| `/seats/itineraries/{id}/occupancy`, `/seats/itineraries/{id}/waitlist`, `/seats/waitlist/*` | Seat Inventory | JWT en todos los métodos |
+| `/bookings*`, `/tickets/*` | Booking + Payment | JWT (incluye `/bookings/affected`, `/bookings/{id}/reschedule`, `/bookings/{id}/affected/*`) |
+| `/box-office/*`, `/reports/*` | Booking + Payment | JWT |
+| `/payments/*` | Booking + Payment | GET público (bancos PSE); otros métodos JWT |
+| `/sandbox/*` | Booking + Payment | público (página/formulario de banco de prueba) |
 | `/webhooks/payment` | Booking + Payment | firma HMAC (no JWT) |
-| `/telemetry/*`, `/trips/{id}/events` | Fleet + Trip Events | JWT |
-| `/trips/{id}/timeline`, `/itineraries/{id}/bus-position`, `/buses/*` | Fleet + Trip Events | públicas |
-| `/offers*` | Flash Offers | GET público, el resto JWT |
+| `/telemetry/*` (temporal, se retira en el Sprint 5), `/trips/{id}/events` | Fleet + Trip Events | JWT |
+| `/trips/{id}/driver`, `/trips/{id}/driver/*` | Fleet + Trip Events | JWT (asignar conductores: OPERADOR/ADMIN) |
+| `/trips/{id}/finish`, `/trips/{id}/alerts*`, `/alerts`, `/alerts/*` | Fleet + Trip Events | JWT (OPERADOR/ADMIN) |
+| `/driver/*` (`/driver/trips`, `/driver/trips/{id}/start`, `/driver/trips/{id}/finish`, `/driver/tracking/*`) | Fleet + Trip Events | JWT (CONDUCTOR) |
+| `/driver/location`, `/driver/location/batch` | Fleet + Trip Events | JWT, rate limit por usuario (como `/telemetry/`) |
+| `/driver/sos` | Fleet + Trip Events | JWT, solo el límite general (un SOS nunca recibe 429 por el límite de `/driver/location`) |
+| `/trips/{id}/timeline`, `/itineraries/{id}/bus-position`, `/itineraries/{id}/eta`, `/buses/{id}/position` (temporal) | Fleet + Trip Events | públicas |
+| `/operator/offers*` | Flash Offers | JWT (prefijo más específico que `/operator/`) |
+| `/offers/showcase` | Flash Offers | público |
+| `/offers/follows`, `/offers/{id}/metrics`, resto de `/offers*` | Flash Offers | JWT; GET de ofertas públicas solo en el resto de `/offers*` |
+| `/fleet/*` | Fleet + Trip Events | JWT |
 | `/ws` (WebSocket) | Realtime Gateway | JWT validado por el Realtime en el handshake; 20 conexiones abiertas por IP |
 | `/auth/validate`, `/internal/*`, `/actuator/*` | — | **nunca** expuestas (404 JSON) |
 | `/health` | gateway | salud del propio NGINX |
