@@ -141,6 +141,8 @@ server {
     location = /auth/register { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
     location = /auth/login    { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
     location = /auth/refresh   { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
+    # Segundo paso del login con 2FA (US-106): público, con el límite estricto de login.
+    location = /auth/2fa      { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
     location = /auth/verify-email { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
     location = /auth/verify-email/resend { auth_request /_auth; proxy_pass http://identity; }
     location /auth/password-reset/ { limit_req zone=auth_ip burst=5 nodelay; proxy_pass http://identity; }
@@ -154,6 +156,8 @@ server {
     location = /users         { auth_request /_auth; proxy_pass http://identity; }
     location /users/          { auth_request /_auth; proxy_pass http://identity; }
     location = /.well-known/jwks.json { proxy_pass http://identity; }
+    # Auditoría de acciones administrativas (US-105). Exacta: gana a "location /admin/" de Catalog.
+    location = /admin/audit   { auth_request /_auth; proxy_pass http://identity; }
 
     # ======================= Fleet + Trip Events ====================================
     # (regex: tienen prioridad sobre los prefijos /trips/, /itineraries/ y /buses/ de Catalog)

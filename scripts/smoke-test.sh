@@ -24,6 +24,17 @@ req()  { # método url [token] [body] [headers extra...] -> imprime "status body
 status() { echo "${1%% *}"; }
 body()   { echo "${1#* }"; }
 login()  { body "$(req POST /auth/login '' "{\"email\":\"$1\",\"password\":\"$PASS\"}")" | jq -r .accessToken; }
+# Fecha UTC ISO-8601 dentro de N segundos: flash-offers rechaza un inicio en el pasado (INVALID_OFFER_WINDOW).
+# Id del usuario (claim sub) de un JWT.
+jwt_sub() { local p; p=$(echo "$1" | cut -d. -f2 | tr '_-' '/+'); while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done; echo "$p" | base64 -d 2>/dev/null | jq -r .sub; }
+# Cierra las ofertas no cerradas de un viaje (las que dejó una ejecución anterior): desde Sprint 4,
+# flash-offers rechaza con 409 OFFER_OVERLAP una oferta que se cruce con otra abierta del mismo viaje.
+cerrar_ofertas_de() {
+  local o; for o in $(body "$(req GET "/operator/offers?size=100" "$ADMIN" '')" | jq -r --arg it "$1" '.content[]? | .oferta | select(.itineraryId==$it and .estado!="CERRADA") | .offerId'); do
+    req POST "/offers/$o/close" "$ADMIN" '' >/dev/null || true
+  done
+}
+en_seg() { date -u -d "+$1 sec" +%FT%TZ 2>/dev/null || date -u -v+"$1"S +%FT%TZ; }
 
 step "0. Gateways arriba (18000 REST y WebSocket /ws, 18007 demo del Realtime en QA)"
 [ "$(curl -s -o /dev/null -w "%{http_code}" "$API/health")" = 200 ] && ok "API Gateway $API/health → 200" || fail "API Gateway no responde en $API"
@@ -81,8 +92,12 @@ R=$(req GET "/tickets/$TK" "$PAX" '')
 step "5. Flash Offers: crear y vender sin superar el cupo (US-054/058/014)"
 LIBRES=$(body "$(req GET "/seats/itineraries/$IT" '' '')" | jq -c '[.asientos[] | select(.estado=="DISPONIBLE")][-3:] | map(.seatNumber)')
 FIN=$(date -u -d '+30 min' +%FT%TZ 2>/dev/null || date -u -v+30M +%FT%TZ)
-R=$(req POST /offers "$OPER" "{\"itineraryId\":\"$IT\",\"seatNumbers\":$LIBRES,\"precioOferta\":49900,\"cupo\":2,\"inicio\":\"$(date -u +%FT%TZ)\",\"fin\":\"$FIN\"}")
-[ "$(status "$R")" = 201 ] || fail "oferta: $R"; OF=$(body "$R" | jq -r .offerId); ok "oferta $OF ACTIVA con cupo 2"
+cerrar_ofertas_de "$IT"
+R=$(req POST /offers "$OPER" "{\"itineraryId\":\"$IT\",\"seatNumbers\":$LIBRES,\"precioOferta\":49900,\"cupo\":2,\"inicio\":\"$(en_seg 3)\",\"fin\":\"$FIN\"}")
+[ "$(status "$R")" = 201 ] || fail "oferta: $R"; OF=$(body "$R" | jq -r .offerId)
+# Nace PROGRAMADA; el OfferScheduler (cada 2 s) la activa al llegar el inicio.
+for _ in $(seq 1 20); do [ "$(body "$(req GET "/offers/$OF" '' '')" | jq -r .estado)" = ACTIVA ] && break; sleep 1; done
+[ "$(body "$(req GET "/offers/$OF" '' '')" | jq -r .estado)" = ACTIVA ] && ok "oferta $OF ACTIVA con cupo 2" || fail "la oferta $OF no se activó en 20 s"
 sleep 2
 [ "$(body "$(req GET "/trips/search?origin=Bogota&destination=Medellin&date=$FECHA" '' '')" | jq -r --arg it "$IT" '.[] | select(.itineraryId==$it) | .ofertaActiva.offerId')" = "$OF" ] && ok "la búsqueda marca el viaje con oferta relámpago (US-014)"
 C1=$(status "$(req POST "/offers/$OF/reservations" "$PAX" '{"docId":"1020304050"}')")
@@ -90,15 +105,21 @@ C2=$(status "$(req POST "/offers/$OF/reservations" "$OTRO" '{"docId":"99887766"}
 C3=$(status "$(req POST "/offers/$OF/reservations" "$ADMIN" '{"docId":"11223344"}')")
 [ "$C1$C2$C3" = "201201409" ] && ok "3 compradores para cupo 2 → 201, 201, 409 OUT_OF_STOCK" || fail "cupo: $C1 $C2 $C3"
 [ "$(body "$(req GET "/offers/$OF/quota" '' '')" | jq -r .cupoRestante)" = 0 ] && ok "cupo restante 0 (US-056)"
+req POST "/offers/$OF/close" "$OPER" '' >/dev/null || true
 
 step "6. Fleet + Trip Events (US-038/039/046)"
 R=$(req POST /telemetry/position "$COND" "{\"busId\":\"$(body "$(req GET "/itineraries/$IT" '' '')" | jq -r .busId)\",\"itineraryId\":\"$IT\",\"lat\":4.9,\"lng\":-74.4,\"velocidad\":72}")
 [ "$(status "$R")" = 202 ] && ok "posición GPS aceptada (ingesta asíncrona)"
 sleep 2
 [ "$(body "$(req GET "/itineraries/$IT/bus-position" '' '')" | jq -r .posicion.lat)" = 4.9 ] && ok "dónde va mi bus: última posición conocida"
+# Desde US-121 el conductor solo reporta novedades de los viajes a los que está asignado: el ADMIN lo
+# asigna como PRINCIPAL (409 = ya lo estaba por una ejecución anterior) y al final se libera.
+R=$(req PUT "/trips/$IT/driver" "$ADMIN" "{\"conductorId\":\"$(jwt_sub "$COND")\",\"rol\":\"PRINCIPAL\"}")
+case "$(status "$R")" in 2??|409) ok "conductor@tripbus.co asignado al viaje (US-121)";; *) fail "asignar conductor: $R";; esac
 R=$(req POST "/trips/$IT/events" "$COND" '{"tipo":"RETRASO","descripcion":"Cierre parcial en la vía","detalle":{"minutos":25}}')
 [ "$(status "$R")" = 201 ] && ok "el conductor reportó un RETRASO" || fail "novedad: $R"
 [ "$(status "$(req POST "/trips/$IT/events" "$PAX" '{"tipo":"RETRASO"}')")" = 403 ] && ok "un pasajero NO puede reportar novedades (US-005)"
+req DELETE "/trips/$IT/driver/PRINCIPAL" "$ADMIN" '' >/dev/null || true
 
 step "7. Cierre de sesión (US-096)"
 [ "$(status "$(req POST /auth/logout "$OTRO" '')")" = 204 ] && ok "logout"
@@ -164,7 +185,6 @@ echo "$CORS" | grep -q PATCH && ok "OPTIONS (preflight PATCH) → ${CORS}" || fa
 
 step "9. Sprint 2 · operación en ruta: conductor, rastreo y posición en vivo (HT-02)"
 # Al final se libera la asignación para que otra ejecución pueda volver a asignar al conductor.
-jwt_sub() { local p; p=$(echo "$1" | cut -d. -f2 | tr '_-' '/+'); while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done; echo "$p" | base64 -d 2>/dev/null | jq -r .sub; }
 nuevo_bus() { # [tipo] → imprime el id del bus nuevo, o vacío si POST /buses no está disponible
   local r; r=$(req POST /buses "$OPER" "{\"placa\":\"$(tr -dc 'A-Z' </dev/urandom | head -c 3)$(printf '%03d' $((RANDOM % 1000)))\",\"tipo\":\"${1:-UN_PISO}\"}")
   [ "$(status "$r")" = 201 ] && body "$r" | jq -r .id || true
