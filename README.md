@@ -192,7 +192,8 @@ con el profile `tunel`.
 
 - **Sin `CLOUDFLARE_TUNNEL_TOKEN`**: túnel rápido a `http://api-gateway:18000` con un enlace
   `https://<aleatorio>.trycloudflare.com` que cambia en cada reinicio. Verlo: `scripts/tunnel-url.sh [qa|prod]`
-  (o `scripts\tunnel-url.ps1`). Para usar el WebSocket desde ese enlace, agrégalo a `WS_ALLOWED_ORIGINS`.
+  (o `scripts\tunnel-url.ps1`). El WebSocket desde ese enlace necesita el patrón `https://*.trycloudflare.com`
+  en `WS_ALLOWED_ORIGINS` (ya está en `.env.qa.example`; el Realtime acepta patrones).
 - **Con `CLOUDFLARE_TUNNEL_TOKEN`** (Cloudflare Zero Trust → *Networks → Tunnels → Create*, tipo
   *cloudflared*): `cloudflared tunnel run` con el token: enlace fijo en tu dominio (necesita un dominio en
   Cloudflare). En el panel, el *public hostname* apunta a `http://api-gateway:18000`. Pon ese dominio en
