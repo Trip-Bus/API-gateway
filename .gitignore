@@ -6,3 +6,6 @@ tools/prefetch-deps/target/
 *.log
 .idea/
 .vscode/
+
+# Copias de seguridad de las bases (HT-05): nunca se suben.
+/backups/

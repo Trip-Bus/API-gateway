@@ -1,0 +1,11 @@
+# Tableros versionados en infra/grafana/dashboards (carpeta TripBus). Se recargan al cambiar el archivo.
+apiVersion: 1
+providers:
+  - name: tripbus
+    folder: TripBus
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

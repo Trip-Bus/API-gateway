@@ -1,32 +1,27 @@
 #!/usr/bin/env bash
-# Despliega TODA la plataforma en Kubernetes (los 8 repos deben estar en la misma carpeta).
-# Uso: ./scripts/k8s-apply.sh      (requiere kubectl apuntando al clúster)
+# Despliega TripBus en Kubernetes con kustomize (HT-06). Requiere kubectl apuntando al clúster.
+# Uso: scripts/k8s-apply.sh qa|prod
+# ANTES: crea los Secret reales (k8s/README.md, "Secretos"); este script se niega si siguen los CAMBIAR.
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-GW="$ROOT/API-gateway"
+cd "$(dirname "$0")/.."
+ENTORNO=${1:-}
+case "$ENTORNO" in qa) NS=tripbus-qa ;; prod) NS=tripbus ;; *) echo "Uso: $0 qa|prod" >&2; exit 1 ;; esac
 
-kubectl apply -f "$GW/k8s/infra/00-namespace.yaml"
-kubectl apply -f "$GW/k8s/infra/10-config.yaml"
-
-# Llaves RSA con las que identity firma los JWT (una sola vez).
-if ! kubectl -n tripbus get secret identity-jwt-keys >/dev/null 2>&1; then
-  TMP=$(mktemp -d)
-  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$TMP/private.pem"
-  openssl rsa -in "$TMP/private.pem" -pubout -out "$TMP/public.pem"
-  kubectl -n tripbus create secret generic identity-jwt-keys \
-    --from-file=private.pem="$TMP/private.pem" --from-file=public.pem="$TMP/public.pem"
-  rm -rf "$TMP"
+kubectl get namespace "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS"
+for s in tripbus-secrets identity-jwt-keys; do
+  if ! kubectl -n "$NS" get secret "$s" >/dev/null 2>&1; then
+    echo "Falta el Secret $s en $NS: créalo primero (k8s/README.md, sección Secretos)." >&2; exit 1
+  fi
+done
+# "CAMBIAR..." en base64 empieza por Q0FNQklBU.
+if kubectl -n "$NS" get secret tripbus-secrets -o jsonpath='{.data}' | grep -q 'Q0FNQklBU'; then
+  echo "tripbus-secrets todavía tiene valores CAMBIAR: reemplázalos." >&2; exit 1
 fi
 
-kubectl apply -f "$GW/k8s/infra/20-postgres.yaml" -f "$GW/k8s/infra/30-redis.yaml"
-kubectl -n tripbus rollout status statefulset/postgres --timeout=180s
-kubectl -n tripbus rollout status statefulset/redis --timeout=120s
-
-for repo in identity catalog-service seat-inventory-service booking-payment-service \
-            fleet-trip-events-service flash-offerts-service Realtime-Gateway; do
-  kubectl apply -f "$ROOT/$repo/k8s/deployment.yaml"
-done
-kubectl apply -f "$GW/k8s/deployment.yaml"
-
-echo "Listo. IPs públicas:"
-kubectl -n tripbus get svc api-gateway realtime-gateway
+# Los Secret del repo son solo plantillas: se aplica todo menos ellos (los reales ya existen).
+kubectl kustomize "k8s/overlays/$ENTORNO" \
+  | awk 'BEGIN{RS="\n---\n"; ORS="\n---\n"} !/\nkind: Secret\n/' \
+  | kubectl apply -f -
+kubectl -n "$NS" rollout status statefulset --timeout=300s
+kubectl -n "$NS" rollout status deployment --timeout=600s
+kubectl -n "$NS" get svc api-gateway

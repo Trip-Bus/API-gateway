@@ -1,0 +1,27 @@
+# Alertas de la plataforma (HT-10). Se ven en Prometheus (/alerts) y en Grafana (Alerting → reglas de
+# la fuente Prometheus).
+groups:
+  - name: tripbus
+    rules:
+      - alert: ServicioCaido
+        expr: up{job="tripbus"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.servicio }} no responde"
+          description: "Prometheus no puede leer /actuator/prometheus de {{ $labels.servicio }} hace más de 1 minuto."
+
+      - alert: Errores5xxAltos
+        expr: |
+          (
+            sum by (servicio) (rate(http_server_requests_seconds_count{job="tripbus", status=~"5.."}[5m]))
+            /
+            sum by (servicio) (rate(http_server_requests_seconds_count{job="tripbus"}[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.servicio }}: más del 5 % de respuestas 5xx"
+          description: "{{ $labels.servicio }} lleva 5 minutos con {{ $value | humanizePercentage }} de respuestas 5xx."

@@ -1,0 +1,28 @@
+# OpenTelemetry Collector (HT-10): recibe las trazas OTLP de los servicios Java y las envía a Tempo.
+#   servicios --OTLP/HTTP :4318 (o gRPC :4317)--> collector --OTLP/gRPC--> tempo:4317
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 100
+  batch: {}
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo]

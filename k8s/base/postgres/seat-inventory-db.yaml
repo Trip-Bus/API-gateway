@@ -1,0 +1,77 @@
+# PostgreSQL propia de seat-inventory (tripbus_inventory). StatefulSet con su volumen; Service sin IP (headless) para
+# el nombre estable seat-inventory-db:5432.
+apiVersion: v1
+kind: Service
+metadata:
+  name: seat-inventory-db
+  labels:
+    app: seat-inventory-db
+    app.kubernetes.io/component: base-de-datos
+spec:
+  clusterIP: None
+  selector:
+    app: seat-inventory-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: seat-inventory-db
+  labels:
+    app: seat-inventory-db
+    app.kubernetes.io/component: base-de-datos
+spec:
+  serviceName: seat-inventory-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: seat-inventory-db
+  template:
+    metadata:
+      labels:
+        app: seat-inventory-db
+        app.kubernetes.io/component: base-de-datos
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: tripbus_inventory
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: INVENTORY_DB_USERNAME }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: INVENTORY_DB_PASSWORD }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 15
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - name: datos
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: datos
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

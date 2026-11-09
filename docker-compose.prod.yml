@@ -8,6 +8,12 @@
 #    bases de datos y Redis NO se publican: solo se alcanzan dentro de la red de Docker.
 #  - Cada secreto es obligatorio: si falta uno en .env.prod, docker compose se niega a arrancar.
 #  - Perfil Spring "prod" (SPRING_PROFILE=prod en .env.prod): sin usuarios de demostración ni Swagger.
+#  - cloudflared (HT-04) publica el gateway por un túnel de Cloudflare: con CLOUDFLARE_TUNNEL_TOKEN, el
+#    túnel con nombre (enlace fijo; necesita un dominio en Cloudflare); sin token, un túnel rápido
+#    (https://<aleatorio>.trycloudflare.com, ver scripts/tunnel-url.sh). Detrás del túnel con HTTPS:
+#    HSTS_ENABLED=true.
+#  - /docs (HT-13) apagado salvo DOCS_ENABLED=true (y springdoc encendido en los servicios).
+#  - Copias diarias de las 6 bases en ./backups (HT-05).
 # =============================================================================
 
 x-restart: &restart
@@ -120,14 +126,61 @@ services:
       <<: *prod-env
       PUBLIC_API_URL: ${PUBLIC_API_URL:?Falta PUBLIC_API_URL en .env.prod}
       WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:?Falta WS_ALLOWED_ORIGINS en .env.prod}
+      # Notificaciones push (US-185): en PROD son obligatorias. Genera el par con
+      #   docker run --rm node:22-alpine npx -y web-push generate-vapid-keys
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:?Falta VAPID_PUBLIC_KEY en .env.prod (llave pública VAPID; ver .env.prod.example)}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:?Falta VAPID_PRIVATE_KEY en .env.prod (llave privada VAPID; ver .env.prod.example)}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:?Falta VAPID_SUBJECT en .env.prod (mailto:correo de contacto)}
     # Sin ports: el WebSocket entra por el API Gateway (ws(s)://<servidor>:18000/ws).
+
+  frontend:
+    <<: *restart
+    image: ghcr.io/trip-bus/frontend:${FRONTEND_TAG:-${TAG:-prod}}
+
+  swagger-ui:
+    <<: *restart
 
   api-gateway:
     <<: *restart
     image: ghcr.io/trip-bus/api-gateway:${TAG:-prod}
     environment:
       CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Falta CORS_ALLOWED_ORIGIN en .env.prod}
+      FRONTEND_URL: ${FRONTEND_URL:?Falta FRONTEND_URL en .env.prod}
+      DOCS_ENABLED: ${DOCS_ENABLED:-false}
+      HSTS_ENABLED: ${HSTS_ENABLED:-false}
     ports: ["18000:18000"]
+
+  # Túnel de Cloudflare (HT-04). Imagen con versión fija; ver el encabezado de este archivo.
+  cloudflared:
+    <<: *restart
+    image: cloudflare/cloudflared:2025.9.1
+    mem_limit: 64m
+    command: tunnel --no-autoupdate ${CLOUDFLARE_TUNNEL_TOKEN:+run} --url http://api-gateway:18000
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      api-gateway:
+        condition: service_started
+
+  backups:
+    <<: *restart
 
   prometheus:
     <<: *restart
+
+  otel-collector:
+    <<: *restart
+
+  tempo:
+    <<: *restart
+
+  loki:
+    <<: *restart
+
+  promtail:
+    <<: *restart
+
+  grafana:
+    <<: *restart
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Falta GRAFANA_ADMIN_PASSWORD en .env.prod}

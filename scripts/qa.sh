@@ -9,7 +9,14 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "Falta $ENV_FILE. Créalo con:  cp .env.qa.example .env.qa" >&2
   exit 1
 fi
-compose() { docker compose -p tripbus-qa --env-file "$ENV_FILE" -f docker-compose.yml -f docker-compose.qa.yml "$@"; }
+# Con el profile "observabilidad" (COMPOSE_PROFILES en el entorno o en $ENV_FILE) se agrega el override que
+# activa trazas OTLP y logs JSON en los servicios Java (HT-10).
+FILES=(-f docker-compose.yml -f docker-compose.qa.yml)
+PROFILES=${COMPOSE_PROFILES:-$(grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)}
+if echo ",$PROFILES," | grep -Eq ',[[:space:]]*observabilidad[[:space:]]*,|,[[:space:]]*observability[[:space:]]*,'; then
+  FILES+=(-f docker-compose.observabilidad.yml)
+fi
+compose() { docker compose -p tripbus-qa --env-file "$ENV_FILE" "${FILES[@]}" "$@"; }
 
 case "${1:-}" in
   up)     compose up -d --build ;;

@@ -17,6 +17,16 @@ if (Select-String -Path $EnvFile -Pattern 'CAMBIAR' -Quiet) {
     Write-Host "$EnvFile todavía tiene valores CAMBIAR_*: reemplázalos antes de desplegar." -ForegroundColor Red; exit 1
 }
 $Base = @('compose', '-p', 'tripbus-prod', '--env-file', $EnvFile, '-f', 'docker-compose.yml', '-f', 'docker-compose.prod.yml')
+# Con el profile "observabilidad" (COMPOSE_PROFILES en el entorno o en $EnvFile) se agrega el override que
+# activa trazas OTLP y logs JSON en los servicios Java (HT-10).
+$Perfiles = $env:COMPOSE_PROFILES
+if (-not $Perfiles) {
+    $Linea = Select-String -Path $EnvFile -Pattern '^COMPOSE_PROFILES=' | Select-Object -Last 1
+    if ($Linea) { $Perfiles = $Linea.Line.Substring('COMPOSE_PROFILES='.Length) }
+}
+if ($Perfiles -and (($Perfiles -split ',') | ForEach-Object { $_.Trim() }) -match '^(observabilidad|observability)$') {
+    $Base += @('-f', 'docker-compose.observabilidad.yml')
+}
 
 switch ($Comando) {
     'pull'   { & docker @Base pull }

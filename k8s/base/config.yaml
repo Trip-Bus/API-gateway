@@ -1,0 +1,45 @@
+# Configuración común de los servicios Java (envFrom) y del gateway. Los overlays cambian lo que depende
+# del entorno (perfil, dominios, siembra de datos).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tripbus-config
+data:
+  SPRING_PROFILES_ACTIVE: "prod"
+  TZ: "America/Bogota"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  DB_PORT: "5432"
+  IDENTITY_JWKS_URI: "http://identity:18001/.well-known/jwks.json"
+  OPENAPI_SERVER_URL: "/api/v1"
+  FRONTEND_URL: "https://CAMBIAR-DOMINIO.example"
+  PUBLIC_API_URL: "https://CAMBIAR-DOMINIO.example"
+  WS_ALLOWED_ORIGINS: "https://CAMBIAR-DOMINIO.example"
+  SEED_ON_STARTUP: "false"
+  SIMULATOR_ENABLED: "false"
+  MFA_REQUIRED_ROLES: ""
+  LOG_FORMAT: "json"
+  TRACING_SAMPLING: "0.1"
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+data:
+  GATEWAY_PORT: "18000"
+  RESOLVER: "kube-dns.kube-system.svc.cluster.local valid=10s ipv6=off"
+  IDENTITY_UPSTREAM: "identity.tripbus.svc.cluster.local:18001"
+  CATALOG_UPSTREAM: "catalog-service.tripbus.svc.cluster.local:18002"
+  SEAT_INVENTORY_UPSTREAM: "seat-inventory-service.tripbus.svc.cluster.local:18003"
+  BOOKING_UPSTREAM: "booking-payment-service.tripbus.svc.cluster.local:18004"
+  FLEET_UPSTREAM: "fleet-trip-events-service.tripbus.svc.cluster.local:18005"
+  FLASH_OFFERS_UPSTREAM: "flash-offers-service.tripbus.svc.cluster.local:18006"
+  REALTIME_UPSTREAM: "realtime-gateway.tripbus.svc.cluster.local:18007"
+  FRONTEND_UPSTREAM: "frontend.tripbus.svc.cluster.local:80"
+  SWAGGER_UI_UPSTREAM: "swagger-ui.tripbus.svc.cluster.local:8080"
+  DOCS_ENABLED: "false"
+  HSTS_ENABLED: "false"
+  REAL_IP_FROM: "10.0.0.0/8"
+  CORS_ALLOWED_ORIGIN: "https://CAMBIAR-DOMINIO.example"
+  FRONTEND_URL: "https://CAMBIAR-DOMINIO.example"
