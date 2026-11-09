@@ -188,6 +188,19 @@ elif [ "$(status "$R")" = 200 ]; then ok "OPERADOR: reporte de puntualidad de ho
 else fail "puntualidad: $R"; fi
 [ "$(status "$(req GET "/reports/punctuality?desde=$HOY&hasta=$HOY" '' '')")" = 401 ] && ok "puntualidad sin token → 401" || fail "puntualidad pública"
 
+step "12.8b Verificación en dos pasos por el gateway (US-106)"
+# /users/me/2fa/* no pasa por auth_request (identity exige el JWT): si MFA_REQUIRED_ROLES obliga al rol, el
+# usuario igual puede activarla. Repetir el setup antes de activar solo reemplaza el secreto pendiente.
+R=$(req POST /users/me/2fa/setup "$OPER" '')
+if nodisp "$R"; then skip "/users/me/2fa/setup aún no está en develop de identity"
+elif [ "$(status "$R")" = 200 ] && [ -n "$(body "$R" | jq -r '.otpauthUri // empty')" ]; then ok "OPERADOR: POST /users/me/2fa/setup → otpauthUri para el QR"
+elif [ "$(status "$R")" = 409 ]; then ok "OPERADOR ya tiene la 2FA activa (409 MFA_ALREADY_ENABLED)"
+else fail "2FA setup: $R"; fi
+[ "$(status "$(req POST /users/me/2fa/setup '' '')")" = 401 ] && ok "2FA setup sin token → 401 (lo exige identity)" || fail "2FA setup sin token"
+R=$(req POST /auth/2fa '' '{"mfaToken":"no-existe","code":"000000"}')
+if nodisp "$R"; then skip "/auth/2fa aún no está en develop de identity"
+else [ "$(status "$R")" = 401 ] && ok "POST /auth/2fa con un mfaToken inválido → 401 $(body "$R" | jq -r .error.code)" || fail "/auth/2fa: $R"; fi
+
 step "Sprints 5 y 6 · datos personales y auditoría (US-131, US-105)"
 step "12.9 Exportar y eliminar mis datos; auditoría"
 read -r DEL_EMAIL DEL_TOKEN <<<"$(nuevo_usuario borrar)"; [ -n "${DEL_TOKEN:-}" ] || fail "no se pudo registrar el usuario a eliminar"

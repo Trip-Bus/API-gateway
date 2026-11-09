@@ -407,7 +407,8 @@ son del frontend.
 | `/docs/`, `/docs/specs/<servicio>` | Swagger UI / `/v3/api-docs` de cada servicio | pública (solo con `DOCS_ENABLED=true`) |
 | `/auth/login`, `/auth/register`, `/auth/password-reset/*`, `/auth/refresh`, `/auth/verify-email`, `/auth/2fa` | Identity | públicas (rate limit estricto) |
 | `/auth/verify-email/resend` | Identity | JWT |
-| `/auth/logout`, `/users`, `/users/*` (incluye `/users/me`, `/users/me/password`, `/users/me/data`, `/users/me/delete`, `/users/me/2fa/*`, `/users/{id}/lock`) | Identity | JWT |
+| `/users`, `/users/*` (incluye `/users/me`, `/users/me/password`, `/users/me/data`, `/users/me/delete`, `/users/{id}/lock`) | Identity | JWT |
+| `/auth/logout`, `/users/me/2fa/*` | Identity | JWT validado por identity (sin `auth_request`): con `MFA_REQUIRED_ROLES`, quien aún no activa la 2FA solo puede activarla o cerrar sesión |
 | `/admin/audit*` | Identity | JWT (ADMIN; regex, gana a `/admin/` de Catalog) |
 | `/.well-known/jwks.json` | Identity | pública |
 | `/trips/search`, `/trips/search/companies`, `/trips/cities`, `/trips/calendar`, `/trips/round-trip` | Catalog | públicas |
@@ -453,6 +454,8 @@ son del frontend.
 
 - **Validación de JWT en el borde**: `auth_request` → subpetición interna a `identity /auth/validate`
   (también rechaza tokens revocados por logout). Desde fuera `/auth/validate` responde 404.
+  Si el rol exige la verificación en dos pasos y aún no está activa (`MFA_REQUIRED_ROLES` de identity),
+  `/auth/validate` responde 403 y el gateway devuelve `403 MFA_SETUP_REQUIRED` en JSON.
 - **Resolución DNS dinámica**: cada upstream usa `zone` + `server <host>:<puerto> resolve` (NGINX
   open source ≥ 1.27.3; la imagen está fijada a `nginx:1.29.8-alpine`) con `resolver ${RESOLVER}`
   (por defecto `127.0.0.11 valid=10s ipv6=off`, el DNS de Docker). Si un servicio se reinicia con

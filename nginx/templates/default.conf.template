@@ -176,12 +176,20 @@ server {
     # Ojo: una location que declara su propio error_page (p. ej. el 418 de las rutas con GET público) NO
     # hereda estos; por eso esas locations los repiten.
     error_page 401 = @unauthorized;
+    error_page 403 = @forbidden;
     error_page 429 = @too_many_requests;
     error_page 502 503 504 = @unavailable;
 
     location @unauthorized {
         default_type application/json;
         return 401 '{"error":{"code":"UNAUTHENTICATED","message":"Se requiere un token de acceso válido","details":{}}}';
+    }
+    # Un 403 generado por NGINX solo puede venir de auth_request: identity responde 403 en /auth/validate
+    # únicamente cuando el rol exige la verificación en dos pasos y aún no está activa (US-106,
+    # MFA_REQUIRED_ROLES). Los 403 de los servicios pasan tal cual (proxy_intercept_errors está apagado).
+    location @forbidden {
+        default_type application/json;
+        return 403 '{"error":{"code":"MFA_SETUP_REQUIRED","message":"Tu rol exige la verificación en dos pasos: actívala en /users/me/2fa antes de continuar","details":{}}}';
     }
     location @too_many_requests {
         default_type application/json;
@@ -219,10 +227,15 @@ server {
         default_type application/json;
         return 404 '{"error":{"code":"NOT_FOUND","message":"Ruta no encontrada en el API Gateway","details":{}}}';
     }
-    location = /auth/logout   { auth_request /_auth; proxy_pass http://identity; }
+    # Sin auth_request: identity valida el JWT y permite cerrar sesión aunque falte activar la 2FA obligatoria
+    # (con auth_request, /auth/validate respondería 403 MFA_SETUP_REQUIRED y no se podría salir).
+    location = /auth/logout   { proxy_pass http://identity; }
     # = /users: listado (GET) y alta de usuarios por el ADMIN (POST).
     location = /users         { auth_request /_auth; proxy_pass http://identity; }
     location /users/          { auth_request /_auth; proxy_pass http://identity; }
+    # Activar la 2FA (US-106): sin auth_request por la misma razón; identity exige el JWT y solo deja pasar
+    # /users/me/2fa/* mientras la verificación obligatoria no esté activa.
+    location /users/me/2fa/   { proxy_pass http://identity; }
     location = /.well-known/jwks.json { proxy_pass http://identity; }
     # Auditoría de acciones administrativas (US-105). Regex: gana a "location /admin/" de Catalog.
     location ~ ^/admin/audit  { auth_request /_auth; proxy_pass http://identity; }
@@ -286,6 +299,7 @@ server {
     location = /routes {
         error_page 418 = @catalog_public;
         error_page 401 = @unauthorized;
+        error_page 403 = @forbidden;
         error_page 429 = @too_many_requests;
         error_page 502 503 504 = @unavailable;
         if ($request_method = GET) { return 418; }
@@ -295,6 +309,7 @@ server {
     location /routes/ {
         error_page 418 = @catalog_public;
         error_page 401 = @unauthorized;
+        error_page 403 = @forbidden;
         error_page 429 = @too_many_requests;
         error_page 502 503 504 = @unavailable;
         if ($request_method = GET) { return 418; }
@@ -307,6 +322,7 @@ server {
     location /itineraries/ {
         error_page 418 = @catalog_public;
         error_page 401 = @unauthorized;
+        error_page 403 = @forbidden;
         error_page 429 = @too_many_requests;
         error_page 502 503 504 = @unavailable;
         if ($request_method = GET) { return 418; }
@@ -317,6 +333,7 @@ server {
     location = /terminals {
         error_page 418 = @catalog_public;
         error_page 401 = @unauthorized;
+        error_page 403 = @forbidden;
         error_page 429 = @too_many_requests;
         error_page 502 503 504 = @unavailable;
         if ($request_method = GET) { return 418; }
@@ -326,6 +343,7 @@ server {
     location /terminals/ {
         error_page 418 = @catalog_public;
         error_page 401 = @unauthorized;
+        error_page 403 = @forbidden;
         error_page 429 = @too_many_requests;
         error_page 502 503 504 = @unavailable;
         if ($request_method = GET) { return 418; }
@@ -343,6 +361,7 @@ server {
     location /seats/ {
         error_page 418 = @seats_public;
         error_page 401 = @unauthorized;
+        error_page 403 = @forbidden;
         error_page 429 = @too_many_requests;
         error_page 502 503 504 = @unavailable;
         if ($request_method = GET) { return 418; }
@@ -377,6 +396,7 @@ server {
     location /payments/ {
         error_page 418 = @booking_public;
         error_page 401 = @unauthorized;
+        error_page 403 = @forbidden;
         error_page 429 = @too_many_requests;
         error_page 502 503 504 = @unavailable;
         if ($request_method = GET) { return 418; }
@@ -404,6 +424,7 @@ server {
     location /offers {
         error_page 418 = @offers_public;
         error_page 401 = @unauthorized;
+        error_page 403 = @forbidden;
         error_page 429 = @too_many_requests;
         error_page 502 503 504 = @unavailable;
         if ($request_method = GET) { return 418; }
