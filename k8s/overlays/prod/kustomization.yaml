@@ -1,0 +1,21 @@
+# PROD en Kubernetes: namespace tripbus, imágenes :prod (frontend :main), 2 réplicas del gateway y del
+# frontend, y el gateway expuesto con un LoadBalancer. Cambia los CAMBIAR-DOMINIO del ConfigMap y crea
+# los Secret reales antes de aplicar (k8s/README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: tripbus
+resources:
+  - ../../base
+images:
+  - { name: ghcr.io/trip-bus/frontend, newTag: main }
+patches:
+  - target: { kind: Service, name: api-gateway }
+    patch: |-
+      - op: add
+        path: /spec/type
+        value: LoadBalancer
+  - target: { kind: Deployment, labelSelector: "app.kubernetes.io/component=microservicio" }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2

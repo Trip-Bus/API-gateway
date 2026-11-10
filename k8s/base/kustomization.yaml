@@ -1,0 +1,29 @@
+# Base de TripBus en Kubernetes (HT-06): 7 servicios, API Gateway, frontend, Redis y 6 PostgreSQL.
+# No se aplica sola: usar un overlay (k8s/overlays/qa o k8s/overlays/prod).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: tripbus
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: tripbus
+    includeSelectors: false
+resources:
+  - namespace.yaml
+  - config.yaml
+  - secrets.yaml
+  - redis.yaml
+  - postgres/identity-db.yaml
+  - postgres/catalog-db.yaml
+  - postgres/seat-inventory-db.yaml
+  - postgres/booking-db.yaml
+  - postgres/fleet-db.yaml
+  - postgres/offers-db.yaml
+  - servicios/identity.yaml
+  - servicios/catalog-service.yaml
+  - servicios/seat-inventory-service.yaml
+  - servicios/booking-payment-service.yaml
+  - servicios/fleet-trip-events-service.yaml
+  - servicios/flash-offers-service.yaml
+  - servicios/realtime-gateway.yaml
+  - frontend.yaml
+  - api-gateway.yaml

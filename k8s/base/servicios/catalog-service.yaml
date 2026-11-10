@@ -1,0 +1,86 @@
+# catalog-service: Deployment + Service (18002). Configuración común en el ConfigMap tripbus-config; secretos en
+# tripbus-secrets. Probes de Spring Boot Actuator (/actuator/health/liveness y /readiness).
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-service
+  labels:
+    app: catalog-service
+    app.kubernetes.io/component: microservicio
+spec:
+  selector:
+    app: catalog-service
+  ports:
+    - name: http
+      port: 18002
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-service
+  labels:
+    app: catalog-service
+    app.kubernetes.io/component: microservicio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: catalog-service
+  template:
+    metadata:
+      labels:
+        app: catalog-service
+        app.kubernetes.io/component: microservicio
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "18002"
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/trip-bus/catalog-service:prod
+          ports:
+            - name: http
+              containerPort: 18002
+          envFrom:
+            - configMapRef:
+                name: tripbus-config
+          env:
+            - name: SERVER_PORT
+              value: "18002"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: REDIS_PASSWORD }
+            - name: DB_HOST
+              value: "catalog-db"
+            - name: DB_NAME
+              value: "tripbus_catalog"
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: CATALOG_DB_USERNAME }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: CATALOG_DB_PASSWORD }
+            - name: INTERNAL_API_TOKEN
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: INTERNAL_API_TOKEN }
+            - name: SEAT_INVENTORY_URL
+              value: "http://seat-inventory-service:18003"
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { cpu: "1", memory: 640Mi }
+          securityContext:
+            allowPrivilegeEscalation: false

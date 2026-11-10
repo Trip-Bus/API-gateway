@@ -1,0 +1,30 @@
+# Tempo (HT-10) de un solo nodo: recibe OTLP del collector y guarda las trazas 48 h en disco del contenedor.
+stream_over_http_enabled: true
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 48h
+
+storage:
+  trace:
+    backend: local
+    # /tmp: escribible por el usuario sin privilegios de la imagen (las trazas no se conservan al recrear).
+    wal:
+      path: /tmp/tempo/wal
+    local:
+      path: /tmp/tempo/blocks

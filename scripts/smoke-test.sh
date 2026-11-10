@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Prueba de humo extremo a extremo del MVP de TripBus, TODO a través del API Gateway (REST y /ws).
+#  Prueba de humo extremo a extremo de TripBus (MVP y sprints 2 a 6), TODO a través del API Gateway
+#  (REST, /api/v1, /ws, frontend y /docs). Los sprints 4 y 5-6 están en smoke-sprint4.sh y smoke-sprint56.sh.
 #  El segundo argumento (18007) solo se usa para la página de demo del Realtime (publicada en QA).
 #  Requisitos: curl y jq. Uso:  ./scripts/smoke-test.sh [http://localhost:18000] [http://localhost:18007]
 #  Pensado para QA (perfil qa): usa los usuarios de demostración y el catálogo sembrado.
@@ -481,4 +482,5 @@ else
 fi
 
 source "$(dirname "$0")/smoke-sprint4.sh"
-printf '\n\033[32mSmoke test MVP + Sprint 4 terminado.\033[0m\n'
+source "$(dirname "$0")/smoke-sprint56.sh"
+printf '\n\033[32mSmoke test MVP + Sprints 2 a 6 terminado.\033[0m\n'

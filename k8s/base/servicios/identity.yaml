@@ -1,0 +1,101 @@
+# identity: Deployment + Service (18001). Configuración común en el ConfigMap tripbus-config; secretos en
+# tripbus-secrets. Probes de Spring Boot Actuator (/actuator/health/liveness y /readiness).
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity
+  labels:
+    app: identity
+    app.kubernetes.io/component: microservicio
+spec:
+  selector:
+    app: identity
+  ports:
+    - name: http
+      port: 18001
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity
+  labels:
+    app: identity
+    app.kubernetes.io/component: microservicio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: identity
+  template:
+    metadata:
+      labels:
+        app: identity
+        app.kubernetes.io/component: microservicio
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "18001"
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/trip-bus/identity:prod
+          ports:
+            - name: http
+              containerPort: 18001
+          envFrom:
+            - configMapRef:
+                name: tripbus-config
+          env:
+            - name: SERVER_PORT
+              value: "18001"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: REDIS_PASSWORD }
+            - name: DB_HOST
+              value: "identity-db"
+            - name: DB_NAME
+              value: "tripbus_identity"
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: IDENTITY_DB_USERNAME }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: IDENTITY_DB_PASSWORD }
+            - name: INTERNAL_API_TOKEN
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: INTERNAL_API_TOKEN }
+            - name: MFA_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: MFA_ENCRYPTION_KEY }
+            - name: JWT_PRIVATE_KEY_PATH
+              value: "/keys/private.pem"
+            - name: JWT_PUBLIC_KEY_PATH
+              value: "/keys/public.pem"
+            - name: CATALOG_URL
+              value: "http://catalog-service:18002"
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { cpu: "1", memory: 640Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: jwt-keys
+              mountPath: /keys
+              readOnly: true
+      volumes:
+        - name: jwt-keys
+          secret:
+            secretName: identity-jwt-keys

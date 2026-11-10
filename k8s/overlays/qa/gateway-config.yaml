@@ -1,0 +1,17 @@
+# Upstreams del gateway con el namespace de QA (tripbus-qa).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+data:
+  IDENTITY_UPSTREAM: "identity.tripbus-qa.svc.cluster.local:18001"
+  CATALOG_UPSTREAM: "catalog-service.tripbus-qa.svc.cluster.local:18002"
+  SEAT_INVENTORY_UPSTREAM: "seat-inventory-service.tripbus-qa.svc.cluster.local:18003"
+  BOOKING_UPSTREAM: "booking-payment-service.tripbus-qa.svc.cluster.local:18004"
+  FLEET_UPSTREAM: "fleet-trip-events-service.tripbus-qa.svc.cluster.local:18005"
+  FLASH_OFFERS_UPSTREAM: "flash-offers-service.tripbus-qa.svc.cluster.local:18006"
+  REALTIME_UPSTREAM: "realtime-gateway.tripbus-qa.svc.cluster.local:18007"
+  FRONTEND_UPSTREAM: "frontend.tripbus-qa.svc.cluster.local:80"
+  SWAGGER_UI_UPSTREAM: "swagger-ui.tripbus-qa.svc.cluster.local:8080"
+  CORS_ALLOWED_ORIGIN: "http://localhost:5173"
+  FRONTEND_URL: "http://localhost:18000"

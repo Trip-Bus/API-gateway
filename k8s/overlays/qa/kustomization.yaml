@@ -1,0 +1,54 @@
+# QA en Kubernetes: namespace tripbus-qa, imágenes :qa (frontend :develop), perfil Spring qa con siembra
+# de datos, usuarios de demostración, simulador GPS y /docs encendido. 1 réplica de cada cosa.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: tripbus-qa
+resources:
+  - ../../base
+images:
+  - { name: ghcr.io/trip-bus/identity, newTag: qa }
+  - { name: ghcr.io/trip-bus/catalog-service, newTag: qa }
+  - { name: ghcr.io/trip-bus/seat-inventory-service, newTag: qa }
+  - { name: ghcr.io/trip-bus/booking-payment-service, newTag: qa }
+  - { name: ghcr.io/trip-bus/fleet-trip-events-service, newTag: qa }
+  - { name: ghcr.io/trip-bus/flash-offerts-service, newTag: qa }
+  - { name: ghcr.io/trip-bus/realtime-gateway, newTag: qa }
+  - { name: ghcr.io/trip-bus/api-gateway, newTag: qa }
+  - { name: ghcr.io/trip-bus/frontend, newTag: develop }
+replicas:
+  - { name: api-gateway, count: 1 }
+  - { name: frontend, count: 1 }
+patches:
+  - target: { kind: Namespace, name: tripbus }
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: tripbus-qa
+  - target: { kind: ConfigMap, name: tripbus-config }
+    patch: |-
+      - op: replace
+        path: /data/SPRING_PROFILES_ACTIVE
+        value: qa
+      - op: replace
+        path: /data/SEED_ON_STARTUP
+        value: "true"
+      - op: replace
+        path: /data/SIMULATOR_ENABLED
+        value: "true"
+      - op: replace
+        path: /data/TRACING_SAMPLING
+        value: "1.0"
+      - op: replace
+        path: /data/LOG_FORMAT
+        value: text
+      - op: replace
+        path: /data/FRONTEND_URL
+        value: http://localhost:18000
+      - op: replace
+        path: /data/PUBLIC_API_URL
+        value: http://localhost:18000
+      - op: replace
+        path: /data/WS_ALLOWED_ORIGINS
+        value: http://localhost:18000,http://localhost:5173
+  - path: gateway-config.yaml
+  - path: identity-demo.yaml

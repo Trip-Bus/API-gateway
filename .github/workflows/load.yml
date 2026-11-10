@@ -1,0 +1,110 @@
+# Prueba de carga (HT-15), solo manual: levanta QA con las imágenes :qa (el gateway desde este commit) y
+# corre con k6, DENTRO de la red de Docker de QA, tests/load/drop.js (500 usuarios compiten por una oferta
+# de cupo 50) y/o tests/load/ws.js (1.000 WebSocket en ofertas:activas durante 2 min).
+# El resumen de k6 queda como artifact "carga" y en el resumen de la ejecución.
+name: Carga
+
+on:
+  workflow_dispatch:
+    inputs:
+      prueba:
+        description: Qué prueba correr
+        type: choice
+        options: [ambas, drop, ws]
+        default: ambas
+      vus_drop:
+        description: Usuarios virtuales del drop
+        default: "500"
+      vus_ws:
+        description: Conexiones WebSocket
+        default: "1000"
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  PROYECTO: tripbus-qa
+  TAG: qa
+  FRONTEND_TAG: develop
+  K6_IMAGE: grafana/k6:1.2.3
+
+jobs:
+  carga:
+    name: k6 contra QA
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      PRUEBA: ${{ inputs.prueba }}
+      VUS_DROP: ${{ inputs.vus_drop }}
+      VUS_WS: ${{ inputs.vus_ws }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Login a Docker Hub
+        if: env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Login a GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USER || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Levantar QA
+        run: |
+          cp .env.qa.example .env.qa
+          C="docker compose -p $PROYECTO --env-file .env.qa -f docker-compose.yml -f docker-compose.qa.yml"
+          mapfile -t SERVICIOS < <($C config --services | grep -vx api-gateway)
+          $C pull "${SERVICIOS[@]}"
+          $C build api-gateway
+          $C up -d --no-build
+          scripts/wait-healthy.sh "$PROYECTO" 900 http://localhost:18000
+          docker pull "$K6_IMAGE"
+          mkdir -p resultados
+
+      - name: Drop de oferta (500 usuarios, cupo 50)
+        if: env.PRUEBA == 'ambas' || env.PRUEBA == 'drop'
+        run: |
+          docker run --rm --network "${PROYECTO}_default" -v "$PWD/tests/load:/scripts:ro" -v "$PWD/resultados:/out" \
+            "$K6_IMAGE" run -e API=http://api-gateway:18000 -e VUS="$VUS_DROP" \
+            --summary-export /out/drop.json /scripts/drop.js | tee resultados/drop.txt
+
+      - name: WebSocket (1.000 conexiones, 2 min)
+        if: (success() || failure()) && (env.PRUEBA == 'ambas' || env.PRUEBA == 'ws')
+        run: |
+          docker run --rm --network "${PROYECTO}_default" -v "$PWD/tests/load:/scripts:ro" -v "$PWD/resultados:/out" \
+            "$K6_IMAGE" run -e WS=ws://api-gateway:18000/ws -e VUS="$VUS_WS" \
+            --summary-export /out/ws.json /scripts/ws.js | tee resultados/ws.txt
+
+      - name: Resumen
+        if: always()
+        run: |
+          {
+            echo "## Prueba de carga"
+            for f in resultados/*.txt; do
+              [ -f "$f" ] || continue
+              echo "### $(basename "$f" .txt)"; echo '```'; sed -n '/THRESHOLDS/,$p' "$f" | head -80; echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          for c in $(docker ps -a --filter "label=com.docker.compose.project=$PROYECTO" --format '{{.Names}}'); do
+            docker logs --timestamps "$c" > "resultados/$c.log" 2>&1 || true
+          done
+
+      - name: Subir resultados
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: carga
+          path: resultados/
+          retention-days: 14
+
+      - name: Bajar la plataforma
+        if: always()
+        run: docker compose -p "$PROYECTO" --env-file .env.qa -f docker-compose.yml -f docker-compose.qa.yml down -v || true
