@@ -1,0 +1,145 @@
+# =============================================================================
+#  Despliegue distribuido (escenario de calidad 1.1) — NODO B: datos, réplica 2 y observabilidad.
+#  Guía completa: docs/despliegue-distribuido.md. Se arranca PRIMERO (el nodo A depende de él):
+#    docker compose -f docker-compose.nodo-b.yml --env-file .env.prod --env-file .env.distribuido up -d
+#
+#  Aquí: las 6 PostgreSQL, Redis, catalog-service y seat-inventory-service (réplica 2), las copias de
+#  seguridad y la pila de observabilidad (prometheus, otel-collector, tempo, loki, promtail, grafana).
+#  Cada servicio se hereda (extends) de docker-compose.yml: misma imagen, variables y secretos (vienen
+#  de .env.prod, no se repiten aquí). Solo se cambia lo que depende de estar en dos máquinas.
+#
+#  Puertos publicados en el host: SOLO los que usa el nodo A, y SOLO deben ser accesibles por Tailscale
+#  (NODO_B_BIND_IP = IP de Tailscale de este nodo, o firewall de Windows que limite a 100.64.0.0/10):
+#    18101-18106 PostgreSQL (identity, catalog, seat-inventory, booking, fleet, offers) · 18100 Redis
+#    18002 catalog (réplica 2) · 18003 seat-inventory (réplica 2) · 4318 OTLP/HTTP del collector
+#  Prometheus no recibe nada: él lee (scrape) los servicios de ambos nodos; no se publica.
+# =============================================================================
+name: tripbus-nodo-b
+
+x-restart: &restart
+  restart: always
+
+# Réplica 2: valida los JWT con el JWKS de identity (nodo A) y manda sus trazas al collector local.
+x-replica-env: &replica-env
+  IDENTITY_JWKS_URI: http://${NODO_A_IP:?Falta NODO_A_IP en .env.distribuido}:18001/.well-known/jwks.json
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  LOG_FORMAT: json
+  TRACING_SAMPLING: ${TRACING_SAMPLING:-0.1}
+  MANAGEMENT_METRICS_DISTRIBUTION_PERCENTILESHISTOGRAM_HTTP_SERVER_REQUESTS: "true"
+
+# Los servicios de observabilidad llevan el profile "observabilidad" en la base: aquí van siempre.
+x-obs: &obs
+  <<: *restart
+  profiles: !reset []
+
+services:
+  # ================================================================ bases de datos y Redis
+  identity-db:
+    extends: { file: docker-compose.yml, service: identity-db }
+    <<: *restart
+    ports: ["${NODO_B_BIND_IP:-0.0.0.0}:18101:5432"]
+  catalog-db:
+    extends: { file: docker-compose.yml, service: catalog-db }
+    <<: *restart
+    ports: ["${NODO_B_BIND_IP:-0.0.0.0}:18102:5432"]
+  seat-inventory-db:
+    extends: { file: docker-compose.yml, service: seat-inventory-db }
+    <<: *restart
+    ports: ["${NODO_B_BIND_IP:-0.0.0.0}:18103:5432"]
+  booking-db:
+    extends: { file: docker-compose.yml, service: booking-db }
+    <<: *restart
+    ports: ["${NODO_B_BIND_IP:-0.0.0.0}:18104:5432"]
+  fleet-db:
+    extends: { file: docker-compose.yml, service: fleet-db }
+    <<: *restart
+    ports: ["${NODO_B_BIND_IP:-0.0.0.0}:18105:5432"]
+  offers-db:
+    extends: { file: docker-compose.yml, service: offers-db }
+    <<: *restart
+    ports: ["${NODO_B_BIND_IP:-0.0.0.0}:18106:5432"]
+
+  redis:
+    extends: { file: docker-compose.yml, service: redis }
+    <<: *restart
+    ports: ["${NODO_B_BIND_IP:-0.0.0.0}:18100:6379"]
+
+  # ================================================================ réplica 2 de catalog y seat-inventory
+  # Comparten base de datos y Redis con la réplica 1 (nodo A). Entre ellas se llaman localmente.
+  catalog-service:
+    extends: { file: docker-compose.yml, service: catalog-service }
+    <<: *restart
+    environment:
+      <<: *replica-env
+      # Solo la réplica del nodo A puede sembrar datos.
+      SEED_ON_STARTUP: "false"
+    ports: ["${NODO_B_BIND_IP:-0.0.0.0}:18002:18002"]
+
+  seat-inventory-service:
+    extends: { file: docker-compose.yml, service: seat-inventory-service }
+    <<: *restart
+    environment: *replica-env
+    ports: ["${NODO_B_BIND_IP:-0.0.0.0}:18003:18003"]
+
+  # ================================================================ copias de seguridad (HT-05)
+  # Junto a las bases: ./backups de ESTE nodo.
+  backups:
+    extends: { file: docker-compose.yml, service: backups }
+    <<: *restart
+
+  # ================================================================ observabilidad (HT-10)
+  # Prometheus lee los servicios de los dos nodos: infra/prometheus/prometheus.distribuido.yml con
+  # NODO_A_IP reemplazado al arrancar (Prometheus no expande variables en su configuración).
+  prometheus:
+    extends: { file: docker-compose.yml, service: prometheus }
+    <<: *obs
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        sed "s/NODO_A_IP/$$NODO_A_IP/g" /etc/prometheus/prometheus.distribuido.yml > /prometheus/prometheus.yml &&
+        exec /bin/prometheus --config.file=/prometheus/prometheus.yml --storage.tsdb.path=/prometheus
+        --storage.tsdb.retention.time=7d
+    environment:
+      NODO_A_IP: ${NODO_A_IP:?Falta NODO_A_IP en .env.distribuido}
+    volumes: !override
+      - ./infra/prometheus/prometheus.distribuido.yml:/etc/prometheus/prometheus.distribuido.yml:ro
+      - ./infra/prometheus/alertas.yml:/etc/prometheus/alertas.yml:ro
+      - prometheus-data:/prometheus
+
+  # Recibe las trazas OTLP de los servicios del nodo A por Tailscale.
+  otel-collector:
+    extends: { file: docker-compose.yml, service: otel-collector }
+    <<: *obs
+    ports: ["${NODO_B_BIND_IP:-0.0.0.0}:4318:4318"]
+
+  tempo:
+    extends: { file: docker-compose.yml, service: tempo }
+    <<: *obs
+
+  loki:
+    extends: { file: docker-compose.yml, service: loki }
+    <<: *obs
+
+  # Lee los logs de los contenedores de ESTE nodo (proyecto tripbus-nodo-b).
+  promtail:
+    extends: { file: docker-compose.yml, service: promtail }
+    <<: *obs
+    environment:
+      COMPOSE_PROJECT_NAME: tripbus-nodo-b
+
+  grafana:
+    extends: { file: docker-compose.yml, service: grafana }
+    <<: *obs
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Falta GRAFANA_ADMIN_PASSWORD en .env.prod}
+
+volumes:
+  identity-db-data:
+  catalog-db-data:
+  seat-inventory-db-data:
+  booking-db-data:
+  fleet-db-data:
+  offers-db-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:

@@ -13,7 +13,8 @@
 # Jobs:
 #   secretos -> Gitleaks sobre todo el historial git.
 #   validar  -> (1) renderiza la plantilla de NGINX (con REALTIME_UPSTREAM del WebSocket /ws) y corre
-#               nginx -t; (2) docker compose config -q de QA y de PROD con los .example (también con el
+#               nginx -t en un nodo y en el modo distribuido (segunda réplica por IP de Tailscale);
+#               (2) docker compose config -q de QA, PROD y nodo A/B con los .example (también con el
 #               override de observabilidad y los profiles); (3) kustomize build de k8s/overlays/{qa,prod}
 #               validado con kubeconform (sin clúster); (4) actionlint sobre los workflows.
 #   docker   -> construye la imagen, la escanea con Trivy (siempre) y, solo en push, la publica en GHCR.
@@ -107,8 +108,19 @@ jobs:
             -e FRONTEND_URL=http://localhost:5173 -e DOCS_ENABLED=true -e HSTS_ENABLED=true \
             -e CORS_ALLOWED_ORIGIN=http://localhost:5173,http://localhost:18007 \
             api-gateway:test nginx -t
+          # Modo distribuido (escenario 1.1): segunda réplica de catalog y seat-inventory por IP.
+          docker run --rm \
+            --add-host identity:127.0.0.1 --add-host catalog-service:127.0.0.1 \
+            --add-host seat-inventory-service:127.0.0.1 --add-host booking-payment-service:127.0.0.1 \
+            --add-host fleet-trip-events-service:127.0.0.1 --add-host flash-offers-service:127.0.0.1 \
+            --add-host realtime-gateway:127.0.0.1 --add-host frontend:127.0.0.1 \
+            --add-host swagger-ui:127.0.0.1 \
+            -e REALTIME_UPSTREAM=realtime-gateway:18007 \
+            -e CATALOG_UPSTREAM_2=100.64.0.2:18002 -e SEAT_INVENTORY_UPSTREAM_2=100.64.0.2:18003 \
+            -e FRONTEND_URL=http://localhost:5173 -e CORS_ALLOWED_ORIGIN=http://localhost:5173 \
+            api-gateway:test nginx -t
 
-      - name: docker compose válido (QA y PROD)
+      - name: docker compose válido (QA, PROD y nodos A/B)
         run: |
           docker compose -p tripbus-qa --env-file .env.qa.example \
             -f docker-compose.yml -f docker-compose.qa.yml config -q
@@ -122,6 +134,11 @@ jobs:
           docker compose -p tripbus-prod --env-file .env.prod.example --profile observabilidad \
             -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.observabilidad.yml config -q
           echo "PROD: + observabilidad OK"
+          for n in a b; do
+            docker compose -f docker-compose.nodo-$n.yml \
+              --env-file .env.prod.example --env-file .env.distribuido.example config -q
+            echo "Distribuido: nodo $n OK"
+          done
 
       # HT-06: manifiestos de Kubernetes sin clúster. Versiones fijas descargadas de sus releases de GitHub.
       - name: Kubernetes (kustomize + kubeconform)
