@@ -157,12 +157,14 @@ R=$(req GET "/tickets/$TK/pdf" "$PAX" ''); if nodisp "$R"; then skip "PDF de tiq
 else fail "PDF tiquete: $R"; fi
 
 step "11.7 Reportes"
-R=$(req GET "/reports/sales?desde=$(date +%F)&hasta=$(date +%F)&agrupar=metodo" "$ADMIN" ''); if nodisp "$R"; then skip "reportes de ventas aún no están en develop de booking"; elif [ "$(status "$R")" = 200 ]; then
+# booking cuenta los días en hora de Colombia: desde ayer hasta hoy (America/Bogota), no en UTC del runner.
+S4_HOY=$(TZ=America/Bogota date +%F); S4_AYER=$(TZ=America/Bogota date -d yesterday +%F 2>/dev/null || TZ=America/Bogota date -v-1d +%F)
+R=$(req GET "/reports/sales?desde=$S4_AYER&hasta=$S4_HOY&agrupar=metodo" "$ADMIN" ''); if nodisp "$R"; then skip "reportes de ventas aún no están en develop de booking"; elif [ "$(status "$R")" = 200 ]; then
   [ "$(body "$R" | jq '.grupos | length')" -gt 0 ] || fail "reporte de ventas sin grupos: $R"
   body "$R" | jq -e '.totales | has("comisionTripBus")' >/dev/null || fail "reporte de ventas sin comisionTripBus: $R"
   ok "reporte por método: $(body "$R" | jq -r '[.grupos[].grupo] | join(", ")') con comisión $(body "$R" | jq -r .totales.comisionTripBus) COP"
 else fail "reporte ventas: $R"; fi
-R=$(req GET "/reports/platform?mes=$(date +%Y-%m)" "$ADMIN" ''); if nodisp "$R"; then skip "reporte de plataforma aún no está en develop"; elif [ "$(status "$R")" = 200 ]; then ok "ADMIN consultó reporte de plataforma del mes"; else fail "reporte plataforma: $R"; fi
+R=$(req GET "/reports/platform?mes=$(TZ=America/Bogota date +%Y-%m)" "$ADMIN" ''); if nodisp "$R"; then skip "reporte de plataforma aún no está en develop"; elif [ "$(status "$R")" = 200 ]; then ok "ADMIN consultó reporte de plataforma del mes"; else fail "reporte plataforma: $R"; fi
 
 step "11.8 Flota y WebSocket"
 R=$(req POST /driver/location "$COND" "{\"itineraryId\":\"$IT\",\"lat\":4.65,\"lng\":-74.1,\"precision\":8,\"timestamp\":\"$(date -u +%FT%TZ)\"}")
