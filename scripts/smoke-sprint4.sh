@@ -167,12 +167,26 @@ else fail "reporte ventas: $R"; fi
 R=$(req GET "/reports/platform?mes=$(TZ=America/Bogota date +%Y-%m)" "$ADMIN" ''); if nodisp "$R"; then skip "reporte de plataforma aún no está en develop"; elif [ "$(status "$R")" = 200 ]; then ok "ADMIN consultó reporte de plataforma del mes"; else fail "reporte plataforma: $R"; fi
 
 step "11.8 Flota y WebSocket"
-R=$(req POST /driver/location "$COND" "{\"itineraryId\":\"$IT\",\"lat\":4.65,\"lng\":-74.1,\"precision\":8,\"timestamp\":\"$(date -u +%FT%TZ)\"}")
-if nodisp "$R"; then skip "ubicación de conductor aún no está en develop de fleet"
-elif [ "$(status "$R")" = 202 ] || [ "$(status "$R")" = 200 ]; then
-  R=$(req GET /fleet/live "$OPER" '')
-  if nodisp "$R"; then skip "/fleet/live aún no está en develop de fleet"; elif [ "$(status "$R")" = 200 ] && echo "$(body "$R")" | grep -q "$IT"; then ok "OPERADOR ve viaje con conductor compartiendo ubicación"; elif [ "$(status "$R")" = 200 ]; then skip "viaje no apareció todavía en /fleet/live"; else fail "fleet live: $R"; fi
-else fail "compartir ubicación: $R"; fi
+# El conductor solo comparte ubicación de un viaje suyo EN CURSO (10.8 ya finalizó y liberó el suyo):
+# se programa un viaje que sale en 10 min, se le asigna, se inicia y al final siempre se finaliza y se libera.
+S4_V=""; S4_V_ASIG=""
+s4_limpiar_viaje() {
+  [ -n "$S4_V" ] && req POST "/driver/trips/$S4_V/finish" "$COND" '' >/dev/null 2>&1 || true
+  [ -n "$S4_V_ASIG" ] && req DELETE "/trips/$S4_V/driver/PRINCIPAL" "$OPER" '' >/dev/null 2>&1 || true
+}
+s4_ubicacion() { req POST /driver/location "$COND" "{\"itineraryId\":\"$S4_V\",\"lat\":4.65,\"lng\":-74.1,\"precision\":8,\"velocidad\":0,\"timestamp\":\"$(date -u +%FT%TZ)\"}"; }
+[ -n "$RUTA" ] && S4_V=$(viaje UN_PISO "$(date -u -d '+10 min' +%FT%TZ 2>/dev/null || date -u -v+10M +%FT%TZ)")
+if [ -z "$S4_V" ]; then skip "sin ruta o sin viaje programado: se omite flota en vivo y WebSocket de flota"
+else
+  trap s4_limpiar_viaje EXIT   # si un fail corta el script, el viaje igual se finaliza y se libera
+  R=$(asignar "$S4_V"); [ "$(status "$R")" = 200 ] || fail "asignar conductor al viaje de flota: $R"; S4_V_ASIG=1
+  ok "conductor@tripbus.co asignado al viaje $S4_V (sale en 10 min)"
+  R=$(req POST "/driver/trips/$S4_V/start" "$COND" '{"checklist":{"manifiestoRevisado":true,"documentosBus":true,"lucesYLlantas":true,"botiquinYExtintor":true}}')
+  [ "$(status "$R")" = 200 ] || fail "iniciar viaje de flota: $R"; ok "viaje $S4_V iniciado con el checklist completo"
+  R=$(s4_ubicacion); [ "$(status "$R")" = 202 ] || fail "compartir ubicación: $R"; ok "el conductor compartió su ubicación (202)"
+  for i in $(seq 1 10); do R=$(req GET /fleet/live "$OPER" ''); [ "$(status "$R")" = 200 ] && body "$R" | grep -q "$S4_V" && break; nodisp "$R" && break; sleep 1; done
+  if nodisp "$R"; then skip "/fleet/live aún no está en develop de fleet"; elif [ "$(status "$R")" = 200 ] && body "$R" | grep -q "$S4_V"; then ok "OPERADOR ve el viaje con conductor compartiendo ubicación"; elif [ "$(status "$R")" = 200 ]; then skip "viaje no apareció todavía en /fleet/live"; else fail "fleet live: $R"; fi
+fi
 if ! command -v websocat >/dev/null 2>&1; then skip "WebSocket Sprint 4 omitido: websocat no está instalado"
 else
   S4_WS=/tmp/tb_ws_sprint4; (printf '{"type":"subscribe","topic":"ofertas:activas"}\n'; sleep 3) | timeout 5 websocat -t "${API/http/ws}/ws" >"$S4_WS" 2>/dev/null & S4_WSP=$!; sleep 2
@@ -181,8 +195,12 @@ else
   CO_ID=$(body "$(req GET /users/me "$OPER" '')" | jq -r '.companyId // .empresaId // empty')
   if [ -n "$CO_ID" ]; then
     S4_WS=/tmp/tb_ws_fleet; (printf '{"type":"connect","token":"%s"}\n' "$OPER"; sleep 1; printf '{"type":"subscribe","topic":"empresa:%s:flota"}\n' "$CO_ID"; sleep 3) \
-      | timeout 6 websocat -t "${API/http/ws}/ws" >"$S4_WS" 2>/dev/null & S4_WSP=$!; sleep 3
+      | timeout 6 websocat -t "${API/http/ws}/ws" >"$S4_WS" 2>/dev/null & S4_WSP=$!
+    # ~1 s después de suscribirse se envía otra posición para que llegue dentro de la ventana de flota.
+    [ -n "$S4_V" ] && { sleep 2; s4_ubicacion >/dev/null; } & S4_LOCP=$!
+    sleep 3
     if grep -q 'empresa:.*:flota\|"lat"\|"lng"\|posicion' "$S4_WS"; then ok "OPERADOR recibió posición en empresa:$CO_ID:flota"; else skip "sin posición en empresa:{id}:flota durante esta ventana"; fi
-    kill "$S4_WSP" 2>/dev/null || true; wait "$S4_WSP" 2>/dev/null || true
+    kill "$S4_WSP" 2>/dev/null || true; wait "$S4_WSP" "$S4_LOCP" 2>/dev/null || true
   else skip "no se pudo obtener empresa del OPERADOR para suscripción de flota"; fi
 fi
+s4_limpiar_viaje; trap - EXIT; S4_V=""; S4_V_ASIG=""
