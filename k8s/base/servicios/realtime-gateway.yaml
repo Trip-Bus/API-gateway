@@ -1,0 +1,88 @@
+# realtime-gateway: Deployment + Service (18007). Configuración común en el ConfigMap tripbus-config; secretos en
+# tripbus-secrets. Probes de Spring Boot Actuator (/actuator/health/liveness y /readiness).
+apiVersion: v1
+kind: Service
+metadata:
+  name: realtime-gateway
+  labels:
+    app: realtime-gateway
+    app.kubernetes.io/component: microservicio
+spec:
+  selector:
+    app: realtime-gateway
+  ports:
+    - name: http
+      port: 18007
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: realtime-gateway
+  labels:
+    app: realtime-gateway
+    app.kubernetes.io/component: microservicio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: realtime-gateway
+  template:
+    metadata:
+      labels:
+        app: realtime-gateway
+        app.kubernetes.io/component: microservicio
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "18007"
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/trip-bus/realtime-gateway:prod
+          ports:
+            - name: http
+              containerPort: 18007
+          envFrom:
+            - configMapRef:
+                name: tripbus-config
+          env:
+            - name: SERVER_PORT
+              value: "18007"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: REDIS_PASSWORD }
+            - name: SEAT_INVENTORY_URL
+              value: "http://seat-inventory-service:18003"
+            - name: FLASH_OFFERS_URL
+              value: "http://flash-offers-service:18006"
+            - name: FLEET_URL
+              value: "http://fleet-trip-events-service:18005"
+            - name: WS_CLIENT_IP_HEADER
+              value: "X-Forwarded-For"
+            - name: VAPID_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: VAPID_PUBLIC_KEY }
+            - name: VAPID_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: VAPID_PRIVATE_KEY }
+            - name: VAPID_SUBJECT
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: VAPID_SUBJECT }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false

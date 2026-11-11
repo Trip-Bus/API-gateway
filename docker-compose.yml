@@ -10,7 +10,11 @@
 #    docker compose -p tripbus-<entorno> --env-file .env.<entorno> -f docker-compose.yml -f docker-compose.<entorno>.yml ...
 #
 #  Aquí: 6 PostgreSQL (una por servicio), Redis con contraseña, llaves JWT, los 7 microservicios,
-#  el API Gateway y Prometheus (profile "observability"). Sin puertos publicados: los publica el override.
+#  el frontend, Swagger UI (/docs), el API Gateway, las copias de seguridad diarias (backups) y, con el
+#  profile "observabilidad", Prometheus, OpenTelemetry Collector, Tempo, Loki, Promtail y Grafana.
+#  Sin puertos publicados: los publica el override.
+#  Con el profile "observabilidad" los scripts agregan docker-compose.observabilidad.yml (trazas OTLP y
+#  logs JSON en los servicios Java).
 #  Dentro de la red de Docker los contenedores se hablan por NOMBRE de servicio y puerto interno.
 #  Los secretos llegan del archivo .env del entorno; si falta uno, compose no arranca.
 # =============================================================================
@@ -30,6 +34,12 @@ x-java-service: &java-service
   restart: unless-stopped
   mem_limit: 640m
 
+# Observabilidad (HT-10): solo con COMPOSE_PROFILES=observabilidad ("observability" se mantiene por
+# compatibilidad con los .env anteriores).
+x-observabilidad: &observabilidad
+  profiles: ["observabilidad", "observability"]
+  restart: unless-stopped
+
 # Variables comunes a todos los servicios Java (cada uno agrega las suyas).
 x-common-env: &common-env
   SPRING_PROFILES_ACTIVE: ${SPRING_PROFILE:?Falta SPRING_PROFILE (qa o prod) en .env.qa o .env.prod}
@@ -38,6 +48,8 @@ x-common-env: &common-env
   REDIS_PASSWORD: ${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env.qa o .env.prod}
   DB_PORT: 5432
   TZ: America/Bogota
+  # HT-13: el OpenAPI de cada servicio declara el gateway (/api/v1) para que "Try it out" de /docs pase por él.
+  OPENAPI_SERVER_URL: /api/v1
 
 x-jwks: &jwks
   IDENTITY_JWKS_URI: http://identity:18001/.well-known/jwks.json
@@ -140,7 +152,7 @@ services:
     <<: *java-service
     image: ghcr.io/trip-bus/identity:${TAG:-prod}
     environment:
-      <<: *common-env
+      <<: [*common-env, *internal-token]
       SERVER_PORT: 18001
       DB_HOST: identity-db
       DB_NAME: tripbus_identity
@@ -148,6 +160,18 @@ services:
       DB_PASSWORD: ${IDENTITY_DB_PASSWORD}
       JWT_PRIVATE_KEY_PATH: /keys/private.pem
       JWT_PUBLIC_KEY_PATH: /keys/public.pem
+      # Identity valida con Catalog que la empresa exista al crear un OPERADOR.
+      CATALOG_URL: http://catalog-service:18002
+      FRONTEND_URL: ${FRONTEND_URL:?Falta FRONTEND_URL en .env.qa o .env.prod}
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      # Verificación en dos pasos (US-106): llave que cifra los secretos TOTP (obligatoria en qa y prod;
+      # sin ella identity no arranca) y roles que deben activarla antes de usar la API (vacío = nadie).
+      MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Falta MFA_ENCRYPTION_KEY en .env.qa o .env.prod}
+      MFA_REQUIRED_ROLES: ${MFA_REQUIRED_ROLES:-}
     volumes:
       - jwt-keys:/keys:ro
     depends_on:
@@ -206,6 +230,7 @@ services:
       CATALOG_URL: http://catalog-service:18002
       SEAT_INVENTORY_URL: http://seat-inventory-service:18003
       FLASH_OFFERS_URL: http://flash-offers-service:18006
+      FRONTEND_URL: ${FRONTEND_URL:?Falta FRONTEND_URL en .env.qa o .env.prod}
       TICKET_SECRET: ${TICKET_SECRET:?Falta TICKET_SECRET en .env.qa o .env.prod}
       PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:?Falta PAYMENT_WEBHOOK_SECRET en .env.qa o .env.prod}
       # La pasarela sandbox llama al webhook del propio servicio por la red interna.
@@ -234,6 +259,8 @@ services:
       DB_USERNAME: ${FLEET_DB_USERNAME}
       DB_PASSWORD: ${FLEET_DB_PASSWORD}
       CATALOG_URL: http://catalog-service:18002
+      # Fleet valida con Identity que el conductor asignado exista, esté activo y sea de la empresa.
+      IDENTITY_URL: http://identity:18001
       SIMULATOR_ENABLED: ${SIMULATOR_ENABLED:-false}
     depends_on:
       fleet-db:
@@ -278,6 +305,14 @@ services:
       FLEET_URL: http://fleet-trip-events-service:18005
       PUBLIC_API_URL: ${PUBLIC_API_URL:?Falta PUBLIC_API_URL en .env.qa o .env.prod}
       WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:?Falta WS_ALLOWED_ORIGINS en .env.qa o .env.prod}
+      # Detrás del gateway todas las conexiones llegan desde su IP: el límite de conexiones por IP (HT-11)
+      # usa el último valor de X-Forwarded-For, que pone el gateway con la IP real del cliente.
+      WS_CLIENT_IP_HEADER: X-Forwarded-For
+      # Notificaciones push (US-185). Vacías = push apagado (503 PUSH_DISABLED); PROD las exige.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      OPENAPI_SERVER_URL: /api/v1
       TZ: America/Bogota
     depends_on:
       redis:
@@ -285,7 +320,41 @@ services:
       identity:
         condition: service_healthy
 
-  # API Gateway (NGINX): único punto de entrada, REST y WebSocket (/ws → realtime-gateway).
+  # Frontend (HT-03): SPA servida por su propio NGINX en el puerto 80. El gateway la publica en "/"; su
+  # proxy interno /api y /ws apunta al gateway y al realtime por si se abre directo (solo red de Docker).
+  # El CI del frontend publica los tags main, develop, latest y sha-<corto>: FRONTEND_TAG elige cuál
+  # (por defecto el mismo TAG del resto).
+  frontend:
+    image: ghcr.io/trip-bus/frontend:${FRONTEND_TAG:-${TAG:-prod}}
+    restart: unless-stopped
+    mem_limit: 64m
+    environment:
+      FRONTEND_PORT: 80
+      API_GATEWAY_URL: http://api-gateway:18000
+      REALTIME_URL: http://realtime-gateway:18007
+
+  # Documentación unificada (HT-13): Swagger UI en /docs del gateway, con un selector por servicio. Los
+  # specs los sirve el gateway en /docs/specs/<servicio> (desde /v3/api-docs de cada uno).
+  swagger-ui:
+    image: swaggerapi/swagger-ui:v5.29.0
+    restart: unless-stopped
+    mem_limit: 64m
+    environment:
+      BASE_URL: /docs
+      PORT: 8080
+      DEEP_LINKING: "true"
+      PERSIST_AUTHORIZATION: "true"
+      URLS_PRIMARY_NAME: catalog
+      URLS: >-
+        [{"name":"identity","url":"/docs/specs/identity"},
+        {"name":"catalog","url":"/docs/specs/catalog"},
+        {"name":"seat-inventory","url":"/docs/specs/seat-inventory"},
+        {"name":"booking","url":"/docs/specs/booking"},
+        {"name":"fleet","url":"/docs/specs/fleet"},
+        {"name":"flash-offers","url":"/docs/specs/flash-offers"},
+        {"name":"realtime","url":"/docs/specs/realtime"}]
+
+  # API Gateway (NGINX): único punto de entrada: frontend (/), REST (también /api/v1), /docs y /ws.
   api-gateway:
     image: ghcr.io/trip-bus/api-gateway:${TAG:-prod}
     restart: unless-stopped
@@ -293,9 +362,17 @@ services:
     environment:
       GATEWAY_PORT: 18000
       REALTIME_UPSTREAM: realtime-gateway:18007
+      FRONTEND_UPSTREAM: frontend:80
+      SWAGGER_UI_UPSTREAM: swagger-ui:8080
       CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:?Falta CORS_ALLOWED_ORIGIN en .env.qa o .env.prod}
       # DNS interno de Docker; valid=10s: si un servicio se reinicia con otra IP, en <=10 s se sigue.
       RESOLVER: 127.0.0.11 valid=10s ipv6=off
+      # HT-12: el banco de prueba (/sandbox/) redirige al frontend: su origen va en el form-action de la CSP.
+      FRONTEND_URL: ${FRONTEND_URL:?Falta FRONTEND_URL en .env.qa o .env.prod}
+      # HT-12: Strict-Transport-Security solo detrás de HTTPS (túnel con dominio propio).
+      HSTS_ENABLED: ${HSTS_ENABLED:-false}
+      # HT-13: /docs. El override de QA lo enciende; en PROD solo con DOCS_ENABLED=true en .env.prod.
+      DOCS_ENABLED: ${DOCS_ENABLED:-false}
     depends_on:
       identity:
         condition: service_healthy
@@ -312,16 +389,134 @@ services:
       # service_started: el REST no espera al WebSocket; el upstream se re-resuelve ("resolve").
       realtime-gateway:
         condition: service_started
+      frontend:
+        condition: service_started
+      swagger-ui:
+        condition: service_started
 
-  # ================================================================ observabilidad
-  # Solo con el profile "observability": agrega COMPOSE_PROFILES=observability al .env del entorno.
-  prometheus:
-    image: prom/prometheus:v2.54.1
-    profiles: ["observability"]
+  # ================================================================ copias de seguridad (HT-05)
+  # Una vez al día (BACKUP_HOUR, hora de Colombia; 3 por defecto) hace pg_dump -Fc de las 6 bases en
+  # ./backups/AAAA-MM-DD/<servicio>.dump y borra las carpetas de más de BACKUP_KEEP_DAYS días (7).
+  # Copia inmediata: scripts/backup-now.sh · restaurar: scripts/restore.sh <servicio> <archivo>.
+  backups:
+    image: postgres:16-alpine
     restart: unless-stopped
+    mem_limit: 128m
+    entrypoint: ["/bin/sh", "/backup/backup.sh"]
+    command: ["loop"]
+    environment:
+      BACKUP_HOUR: ${BACKUP_HOUR:-3}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+      IDENTITY_DB_USERNAME: ${IDENTITY_DB_USERNAME}
+      IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD}
+      CATALOG_DB_USERNAME: ${CATALOG_DB_USERNAME}
+      CATALOG_DB_PASSWORD: ${CATALOG_DB_PASSWORD}
+      INVENTORY_DB_USERNAME: ${INVENTORY_DB_USERNAME}
+      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD}
+      BOOKING_DB_USERNAME: ${BOOKING_DB_USERNAME}
+      BOOKING_DB_PASSWORD: ${BOOKING_DB_PASSWORD}
+      FLEET_DB_USERNAME: ${FLEET_DB_USERNAME}
+      FLEET_DB_PASSWORD: ${FLEET_DB_PASSWORD}
+      OFFERS_DB_USERNAME: ${OFFERS_DB_USERNAME}
+      OFFERS_DB_PASSWORD: ${OFFERS_DB_PASSWORD}
+    volumes:
+      - ./infra/backups/backup.sh:/backup/backup.sh:ro
+      - ./backups:/backups
+    depends_on:
+      identity-db:
+        condition: service_healthy
+      catalog-db:
+        condition: service_healthy
+      seat-inventory-db:
+        condition: service_healthy
+      booking-db:
+        condition: service_healthy
+      fleet-db:
+        condition: service_healthy
+      offers-db:
+        condition: service_healthy
+
+  # ================================================================ observabilidad (HT-10)
+  # Solo con el profile "observabilidad": COMPOSE_PROFILES=observabilidad en el .env del entorno (los
+  # scripts agregan entonces docker-compose.observabilidad.yml: trazas OTLP y logs JSON en los servicios).
+  #   servicios Java --OTLP/HTTP--> otel-collector --OTLP/gRPC--> tempo   (trazas)
+  #   prometheus --/actuator/prometheus--> servicios                      (métricas + alertas)
+  #   promtail --docker.sock--> logs de los contenedores --> loki          (logs)
+  #   grafana: datasources y 3 tableros por código (infra/grafana)
+  prometheus:
+    <<: *observabilidad
+    image: prom/prometheus:v2.54.1
     mem_limit: 256m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alertas.yml:/etc/prometheus/alertas.yml:ro
+      - prometheus-data:/prometheus
+
+  otel-collector:
+    <<: *observabilidad
+    image: otel/opentelemetry-collector:0.135.0
+    mem_limit: 128m
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./infra/otel/collector.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      tempo:
+        condition: service_started
+
+  tempo:
+    <<: *observabilidad
+    image: grafana/tempo:2.8.2
+    mem_limit: 256m
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./infra/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+
+  loki:
+    <<: *observabilidad
+    image: grafana/loki:3.5.5
+    mem_limit: 256m
+    # Configuración de un solo nodo que trae la imagen (almacenamiento en disco, esquema v13).
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+
+  promtail:
+    <<: *observabilidad
+    image: grafana/promtail:3.5.5
+    mem_limit: 128m
+    command: ["-config.file=/etc/promtail/promtail.yaml", "-config.expand-env=true"]
+    environment:
+      # Solo los contenedores de este proyecto de compose (tripbus-qa o tripbus-prod).
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-tripbus-qa}
+    volumes:
+      - ./infra/promtail/promtail.yaml:/etc/promtail/promtail.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      loki:
+        condition: service_started
+
+  grafana:
+    <<: *observabilidad
+    image: grafana/grafana:12.1.1
+    mem_limit: 256m
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+      tempo:
+        condition: service_started
 
 volumes:
   identity-db-data:
@@ -332,3 +527,5 @@ volumes:
   offers-db-data:
   redis-data:
   jwt-keys:
+  prometheus-data:
+  grafana-data:

@@ -9,3 +9,4 @@ scripts/
 .env
 .env.*
 docker-compose*.yml
+backups/

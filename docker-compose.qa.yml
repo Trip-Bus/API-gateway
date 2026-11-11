@@ -11,6 +11,13 @@
 #  - Perfil Spring "qa" (SPRING_PROFILE=qa en .env.qa), simulador GPS y usuarios de demostración.
 #  - Mailpit atrapa los correos (tiquetes con QR, US-033); ninguno sale a Internet:
 #      http://localhost:18025 interfaz web · SMTP interno mailpit:1025
+#  - Frontend compilado desde ../frontend y servido por el gateway en http://localhost:18000 (HT-03);
+#    /docs encendido (HT-13). Vite (5173) sigue funcionando para desarrollar (CORS igual que antes).
+#  - Profile "observabilidad": Grafana en http://localhost:18030 y Prometheus en http://localhost:9090.
+#  - Profile "tunel": cloudflared publica el gateway por un túnel rápido de Cloudflare (HT-04);
+#    el enlace: scripts/tunnel-url.sh (o .ps1).
+#  - E2E (HT-14): con TAG=qa (y FRONTEND_TAG=develop) se usan las imágenes del CI en vez de compilar:
+#    docker compose ... pull  &&  docker compose ... up -d --no-build
 # =============================================================================
 
 services:
@@ -42,31 +49,36 @@ services:
     build:
       context: ${IDENTITY_SRC:-../identity}
       args: { GIT_COMMIT: qa-local }
-    image: ghcr.io/trip-bus/identity:qa-local
+    image: ghcr.io/trip-bus/identity:${TAG:-qa-local}
     environment:
       # El perfil qa de identity crea los usuarios de demostración con esta contraseña.
       DEMO_USERS_PASSWORD: ${DEMO_USERS_PASSWORD:?Falta DEMO_USERS_PASSWORD en .env.qa}
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+    depends_on:
+      mailpit:
+        condition: service_started
     ports: ["18001:18001"]
 
   catalog-service:
     build:
       context: ${CATALOG_SRC:-../catalog-service}
       args: { GIT_COMMIT: qa-local }
-    image: ghcr.io/trip-bus/catalog-service:qa-local
+    image: ghcr.io/trip-bus/catalog-service:${TAG:-qa-local}
     ports: ["18002:18002"]
 
   seat-inventory-service:
     build:
       context: ${SEAT_INVENTORY_SRC:-../seat-inventory-service}
       args: { GIT_COMMIT: qa-local }
-    image: ghcr.io/trip-bus/seat-inventory-service:qa-local
+    image: ghcr.io/trip-bus/seat-inventory-service:${TAG:-qa-local}
     ports: ["18003:18003"]
 
   booking-payment-service:
     build:
       context: ${BOOKING_SRC:-../booking-payment-service}
       args: { GIT_COMMIT: qa-local }
-    image: ghcr.io/trip-bus/booking-payment-service:qa-local
+    image: ghcr.io/trip-bus/booking-payment-service:${TAG:-qa-local}
     environment:
       # Tiquetes por correo a Mailpit (sin usuario ni TLS).
       MAIL_HOST: mailpit
@@ -80,7 +92,7 @@ services:
     build:
       context: ${FLEET_SRC:-../fleet-trip-events-service}
       args: { GIT_COMMIT: qa-local }
-    image: ghcr.io/trip-bus/fleet-trip-events-service:qa-local
+    image: ghcr.io/trip-bus/fleet-trip-events-service:${TAG:-qa-local}
     environment:
       SIMULATOR_ENABLED: "true"
     ports: ["18005:18005"]
@@ -89,20 +101,45 @@ services:
     build:
       context: ${FLASH_OFFERS_SRC:-../flash-offerts-service}
       args: { GIT_COMMIT: qa-local }
-    image: ghcr.io/trip-bus/flash-offerts-service:qa-local
+    image: ghcr.io/trip-bus/flash-offerts-service:${TAG:-qa-local}
     ports: ["18006:18006"]
 
   realtime-gateway:
     build:
       context: ${REALTIME_SRC:-../Realtime-Gateway}
       args: { GIT_COMMIT: qa-local }
-    image: ghcr.io/trip-bus/realtime-gateway:qa-local
+    image: ghcr.io/trip-bus/realtime-gateway:${TAG:-qa-local}
     ports: ["18007:18007"]
+
+  frontend:
+    build:
+      context: ${FRONTEND_SRC:-../frontend}
+    image: ghcr.io/trip-bus/frontend:${FRONTEND_TAG:-${TAG:-qa-local}}
 
   api-gateway:
     build: .
-    image: ghcr.io/trip-bus/api-gateway:qa-local
+    image: ghcr.io/trip-bus/api-gateway:${TAG:-qa-local}
+    environment:
+      DOCS_ENABLED: "true"
     ports: ["18000:18000"]
 
   prometheus:
     ports: ["9090:9090"]
+
+  grafana:
+    ports: ["18030:3000"]
+
+  # Túnel rápido de Cloudflare (HT-04), solo con COMPOSE_PROFILES=tunel (o --profile tunel). Sin
+  # CLOUDFLARE_TUNNEL_TOKEN: enlace https://<aleatorio>.trycloudflare.com (scripts/tunnel-url.sh). Con
+  # token: el túnel con nombre de tu cuenta (enlace fijo; necesita un dominio en Cloudflare).
+  cloudflared:
+    image: cloudflare/cloudflared:2025.9.1
+    profiles: ["tunel"]
+    restart: unless-stopped
+    mem_limit: 64m
+    command: tunnel --no-autoupdate ${CLOUDFLARE_TUNNEL_TOKEN:+run} --url http://api-gateway:18000
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      api-gateway:
+        condition: service_started

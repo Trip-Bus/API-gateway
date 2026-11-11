@@ -6,7 +6,10 @@ FROM nginx:1.29.8-alpine
 
 # Parches de seguridad de los paquetes de Alpine publicados después de la imagen base (Trivy los
 # exige: CRITICAL/HIGH con corrección disponible). No cambia la versión de NGINX.
-RUN apk upgrade --no-cache
+# APK_CACHE_BUST: el CI pasa un valor por ejecución para que la caché de capas (type=gha) no reutilice
+# un "apk upgrade" viejo y la imagen salga con parches ya publicados (p. ej. curl 8.22 → 8.23).
+ARG APK_CACHE_BUST=local
+RUN echo "apk upgrade: $APK_CACHE_BUST" && apk upgrade --no-cache
 
 COPY nginx/templates/ /etc/nginx/templates/
 # Corre después de 20-envsubst-on-templates.sh: genera el map de orígenes CORS permitidos.
@@ -15,6 +18,11 @@ COPY --chmod=755 nginx/entrypoint/25-cors-origins.sh /docker-entrypoint.d/25-cor
 # Valores por defecto (nombres de servicio de docker-compose). En compose/Kubernetes se pueden cambiar.
 #  RESOLVER: DNS interno de Docker (127.0.0.11); valid=10s = vuelve a preguntar la IP cada 10 s.
 #  CORS_ALLOWED_ORIGIN: lista separada por comas; sin '*' por defecto.
+#  FRONTEND_UPSTREAM / SWAGGER_UI_UPSTREAM: contenedores del frontend (/) y de Swagger UI (/docs).
+#  FRONTEND_URL: se agrega al form-action de la CSP solo en /sandbox/ (el banco de prueba redirige allí).
+#  DOCS_ENABLED: /docs solo responde con true (compose de QA lo enciende; PROD lo deja apagado).
+#  HSTS_ENABLED: true agrega Strict-Transport-Security (solo detrás de HTTPS, p. ej. el túnel).
+#  REAL_IP_FROM: red desde la que se cree el header CF-Connecting-IP (cloudflared en la red de Docker).
 ENV GATEWAY_PORT=18000 \
     RESOLVER="127.0.0.11 valid=10s ipv6=off" \
     IDENTITY_UPSTREAM=identity:18001 \
@@ -24,6 +32,12 @@ ENV GATEWAY_PORT=18000 \
     FLEET_UPSTREAM=fleet-trip-events-service:18005 \
     FLASH_OFFERS_UPSTREAM=flash-offers-service:18006 \
     REALTIME_UPSTREAM=realtime-gateway:18007 \
+    FRONTEND_UPSTREAM=frontend:80 \
+    SWAGGER_UI_UPSTREAM=swagger-ui:8080 \
+    FRONTEND_URL="" \
+    DOCS_ENABLED=false \
+    HSTS_ENABLED=false \
+    REAL_IP_FROM=172.16.0.0/12 \
     CORS_ALLOWED_ORIGIN=http://localhost:5173 \
     RATE_LIMIT_PER_IP=30r/s \
     RATE_LIMIT_PER_USER=10r/s \

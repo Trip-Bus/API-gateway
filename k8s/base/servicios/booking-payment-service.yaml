@@ -1,0 +1,98 @@
+# booking-payment-service: Deployment + Service (18004). Configuración común en el ConfigMap tripbus-config; secretos en
+# tripbus-secrets. Probes de Spring Boot Actuator (/actuator/health/liveness y /readiness).
+apiVersion: v1
+kind: Service
+metadata:
+  name: booking-payment-service
+  labels:
+    app: booking-payment-service
+    app.kubernetes.io/component: microservicio
+spec:
+  selector:
+    app: booking-payment-service
+  ports:
+    - name: http
+      port: 18004
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking-payment-service
+  labels:
+    app: booking-payment-service
+    app.kubernetes.io/component: microservicio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: booking-payment-service
+  template:
+    metadata:
+      labels:
+        app: booking-payment-service
+        app.kubernetes.io/component: microservicio
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "18004"
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/trip-bus/booking-payment-service:prod
+          ports:
+            - name: http
+              containerPort: 18004
+          envFrom:
+            - configMapRef:
+                name: tripbus-config
+          env:
+            - name: SERVER_PORT
+              value: "18004"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: REDIS_PASSWORD }
+            - name: DB_HOST
+              value: "booking-db"
+            - name: DB_NAME
+              value: "tripbus_booking"
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: BOOKING_DB_USERNAME }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: BOOKING_DB_PASSWORD }
+            - name: INTERNAL_API_TOKEN
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: INTERNAL_API_TOKEN }
+            - name: TICKET_SECRET
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: TICKET_SECRET }
+            - name: PAYMENT_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: PAYMENT_WEBHOOK_SECRET }
+            - name: CATALOG_URL
+              value: "http://catalog-service:18002"
+            - name: SEAT_INVENTORY_URL
+              value: "http://seat-inventory-service:18003"
+            - name: FLASH_OFFERS_URL
+              value: "http://flash-offers-service:18006"
+            - name: PAYMENT_WEBHOOK_URL
+              value: "http://booking-payment-service:18004/webhooks/payment"
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { cpu: "1", memory: 640Mi }
+          securityContext:
+            allowPrivilegeEscalation: false

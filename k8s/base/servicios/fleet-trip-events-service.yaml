@@ -1,0 +1,88 @@
+# fleet-trip-events-service: Deployment + Service (18005). Configuración común en el ConfigMap tripbus-config; secretos en
+# tripbus-secrets. Probes de Spring Boot Actuator (/actuator/health/liveness y /readiness).
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleet-trip-events-service
+  labels:
+    app: fleet-trip-events-service
+    app.kubernetes.io/component: microservicio
+spec:
+  selector:
+    app: fleet-trip-events-service
+  ports:
+    - name: http
+      port: 18005
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fleet-trip-events-service
+  labels:
+    app: fleet-trip-events-service
+    app.kubernetes.io/component: microservicio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fleet-trip-events-service
+  template:
+    metadata:
+      labels:
+        app: fleet-trip-events-service
+        app.kubernetes.io/component: microservicio
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "18005"
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/trip-bus/fleet-trip-events-service:prod
+          ports:
+            - name: http
+              containerPort: 18005
+          envFrom:
+            - configMapRef:
+                name: tripbus-config
+          env:
+            - name: SERVER_PORT
+              value: "18005"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: REDIS_PASSWORD }
+            - name: DB_HOST
+              value: "fleet-db"
+            - name: DB_NAME
+              value: "tripbus_fleet"
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: FLEET_DB_USERNAME }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: FLEET_DB_PASSWORD }
+            - name: INTERNAL_API_TOKEN
+              valueFrom:
+                secretKeyRef: { name: tripbus-secrets, key: INTERNAL_API_TOKEN }
+            - name: CATALOG_URL
+              value: "http://catalog-service:18002"
+            - name: IDENTITY_URL
+              value: "http://identity:18001"
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { cpu: "1", memory: 640Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
