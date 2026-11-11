@@ -181,7 +181,7 @@ else
   elif [ "$(status "$R")" = 200 ]; then ok "recorrido del viaje F sin token → $(body "$R" | jq -r '(.paradas // []) | length') paradas"
   else fail "recorrido: $R"; fi
 fi
-HOY=$(date +%F)
+HOY=$(TZ=America/Bogota date +%F)   # fleet cuenta los días en hora de Colombia
 R=$(req GET "/reports/punctuality?desde=$HOY&hasta=$HOY&agrupar=ruta" "$OPER" '')
 if nodisp "$R"; then skip "/reports/punctuality aún no está en develop de fleet"
 elif [ "$(status "$R")" = 200 ]; then ok "OPERADOR: reporte de puntualidad de hoy por ruta (fleet, no booking)"
