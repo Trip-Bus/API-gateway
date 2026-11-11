@@ -91,7 +91,10 @@ step "11.4 Lista de espera"
 R=$(req GET "/seats/itineraries/$IT/occupancy" "$OPER" '')
 if nodisp "$R"; then skip "ocupación/lista de espera aún no está en develop de seat-inventory"
 elif [ "$(status "$R")" = 200 ]; then
-  R=$(req POST "/seats/itineraries/$IT/waitlist" "$OTRO" '{"seatCount":1}')
+  # El token de $OTRO ya fue revocado por el logout de smoke-test.sh: se registra un pasajero nuevo.
+  R=$(req POST /auth/register '' "{\"email\":\"smoke.$RANDOM$RANDOM@tripbus.co\",\"password\":\"Passw0rd1\",\"documentoIdentidad\":\"CC$RANDOM$RANDOM\",\"nombre\":\"Lista Espera\",\"aceptaPoliticaDatos\":true}")
+  [ "$(status "$R")" = 201 ] || fail "registro para lista de espera: $R"; S4_ESPERA=$(body "$R" | jq -r .accessToken)
+  R=$(req POST "/seats/itineraries/$IT/waitlist" "$S4_ESPERA" '{"seatCount":1}')
   if nodisp "$R"; then skip "inscripción a lista de espera aún no está en develop"; elif [ "$(status "$R")" = 201 ]; then ok "otro pasajero se anotó; oferta de asiento depende de liberar un asiento agotado"; else fail "lista de espera: $R"; fi
 else fail "ocupación: $R"; fi
 
