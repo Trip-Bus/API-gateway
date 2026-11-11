@@ -103,35 +103,53 @@ elif [ "$(status "$R")" = 200 ]; then
 else fail "ocupación: $R"; fi
 
 step "11.5 Pagos: NEQUI y PSE/sandbox"
+s4_libre() { body "$(req GET "/seats/itineraries/$IT" '' '')" | jq -r '[.asientos[] | select(.estado=="DISPONIBLE")][0].seatNumber // empty'; }
+s4_reserva() { # retiene 1 asiento libre de $IT y crea la reserva del PASAJERO → S4_BK
+  local a r; S4_BK=""; a=$(s4_libre); [ -n "$a" ] || fail "no quedan asientos libres en $IT"
+  r=$(req POST /seats/holds "$PAX" "{\"itineraryId\":\"$IT\",\"seatNumbers\":[\"$a\"]}")
+  [ "$(status "$r")" = 201 ] || fail "retención para $1: $r"
+  r=$(req POST /bookings "$PAX" "{\"holdId\":\"$(body "$r" | jq -r .holdId)\",\"pasajeros\":[{\"nombre\":\"Smoke $1\",\"tipoDocumento\":\"CC\",\"numeroDocumento\":\"1020304050\"}]}")
+  [ "$(status "$r")" = 201 ] || fail "reserva para $1: $r"; S4_BK=$(body "$r" | jq -r .bookingId)
+}
+s4_espera() { # reserva → espera hasta 20 s a CONFIRMADA y deja el estado en S4_EST
+  local i; for i in $(seq 1 20); do
+    S4_EST=$(body "$(req GET "/bookings/$1" "$PAX" '')" | jq -r '.estado // empty'); [ "$S4_EST" = CONFIRMADA ] && return 0; sleep 1
+  done; return 1
+}
+s4_pagar() { req POST "/bookings/$1/pay" "$PAX" "$2" "Idempotency-Key: smoke4-$(date +%s)-$RANDOM"; }
+
 R=$(req GET /payments/pse/banks '' ''); if nodisp "$R"; then skip "bancos PSE aún no están en develop de booking"; elif [ "$(status "$R")" = 200 ]; then ok "GET público /payments/pse/banks"; else fail "bancos PSE: $R"; fi
-for TEL in 3991111111 3992222222; do R=$(req POST /payments/nequi "$PAX" "{\"phone\":\"$TEL\"}"); if nodisp "$R"; then skip "NEQUI aún no está en develop de booking"; break; elif [ "$TEL" = 3991111111 ] && { [ "$(status "$R")" = 200 ] || [ "$(status "$R")" = 201 ]; }; then ok "NEQUI $TEL aprobado"; elif [ "$TEL" = 3992222222 ] && { [ "$(status "$R")" = 402 ] || [ "$(body "$R" | jq -r '.estado // .error.code')" = RECHAZADO ]; }; then ok "NEQUI $TEL rechazado"; else fail "NEQUI $TEL: $R"; fi; done
-R=$(req POST /payments/pse "$PAX" '{"bankId":"1"}')
-if nodisp "$R"; then skip "inicio de pago PSE aún no está en develop de booking"
-elif [ "$(status "$R")" = 200 ] || [ "$(status "$R")" = 201 ] || [ "$(status "$R")" = 302 ]; then
-  S4_PSE_BK=$(body "$R" | jq -r '.bookingId // empty' 2>/dev/null || true)
-  ok "pago PSE iniciado con banco 1"
-  R=$(req GET /sandbox/ '' '')
-  if nodisp "$R"; then skip "página sandbox aún no está en develop de booking"
-  elif [ "$(status "$R")" = 200 ]; then
-    R=$(req POST /sandbox/ '' '{"bankId":"1","accion":"aprobar"}')
-    if nodisp "$R"; then skip "POST sandbox aún no está en develop de booking"
-    elif [ "$(status "$R")" = 200 ] || [ "$(status "$R")" = 302 ]; then
-      ok "POST de sandbox aprobado"
-      if [ -n "$S4_PSE_BK" ]; then
-        for i in $(seq 1 20); do R=$(req GET "/bookings/$S4_PSE_BK" "$PAX" ''); [ "$(body "$R" | jq -r '.estado // empty')" = CONFIRMADA ] && break; sleep 1; done
-        [ "$(status "$R")" = 200 ] && [ "$(body "$R" | jq -r '.estado')" = CONFIRMADA ] && ok "reserva PSE $S4_PSE_BK confirmada" || fail "reserva tras PSE: $R"
-      else skip "pago PSE no devolvió bookingId para comprobar confirmación"; fi
-    else fail "aprobar en sandbox: $R"; fi
-  else fail "GET sandbox: $R"; fi
-else fail "inicio PSE: $R"; fi
-R=$(req GET /sandbox/ '' ''); if nodisp "$R"; then skip "página sandbox aún no está en develop de booking"; elif [ "$(status "$R")" = 200 ]; then ok "página bancaria sandbox pública"; else fail "página sandbox: $R"; fi
+
+s4_reserva "NEQUI aprobado"
+R=$(s4_pagar "$S4_BK" '{"metodo":"NEQUI","nequi":{"telefono":"3991111111"}}')
+case "$(status "$R")" in 200|202) ok "pago NEQUI 3991111111 enviado";; *) fail "pago NEQUI 3991111111: $R";; esac
+s4_espera "$S4_BK" && ok "reserva NEQUI $S4_BK CONFIRMADA" || fail "la reserva NEQUI $S4_BK quedó en $S4_EST"
+
+s4_reserva "NEQUI rechazado"
+R=$(s4_pagar "$S4_BK" '{"metodo":"NEQUI","nequi":{"telefono":"3992222222"}}')
+if [ "$(status "$R")" = 402 ] || [ "$(body "$R" | jq -r '.estado // empty' 2>/dev/null)" = RECHAZADO ]; then ok "NEQUI 3992222222 rechazado ($(status "$R"))"
+elif [ "$(status "$R")" = 200 ] || [ "$(status "$R")" = 202 ]; then
+  s4_espera "$S4_BK" && fail "NEQUI 3992222222 debía rechazarse y la reserva quedó CONFIRMADA" || ok "NEQUI 3992222222 rechazado: la reserva quedó en $S4_EST"
+else fail "pago NEQUI 3992222222: $R"; fi
+
+s4_reserva "PSE"
+R=$(s4_pagar "$S4_BK" '{"metodo":"PSE","pse":{"bancoCodigo":"1","tipoPersona":"NATURAL","tipoDocumento":"CC","numeroDocumento":"12345678"}}')
+case "$(status "$R")" in 200|202) ;; *) fail "pago PSE: $R";; esac
+S4_PSE_URL=$(body "$R" | jq -r '.redirectUrl // empty'); [ -n "$S4_PSE_URL" ] || fail "pago PSE sin redirectUrl: $R"
+S4_PSE_ID=${S4_PSE_URL##*/sandbox/pse/}; ok "pago PSE iniciado con banco 1 → $S4_PSE_URL"
+R=$(req GET "/sandbox/pse/$S4_PSE_ID" '' '')
+[ "$(status "$R")" = 200 ] && body "$R" | grep -qi '<html' && ok "página bancaria sandbox pública (HTML)" || fail "GET sandbox PSE: $(status "$R")"
+R=$(req POST "/sandbox/pse/$S4_PSE_ID?action=approve" '' '')
+[ "$(status "$R")" = 302 ] && ok "sandbox PSE aprobó el pago (302)" || fail "aprobar en sandbox PSE: $R"
+s4_espera "$S4_BK" && ok "reserva PSE $S4_BK CONFIRMADA" || fail "la reserva PSE $S4_BK quedó en $S4_EST"
 
 step "11.6 Taquilla y tiquete PDF"
-R=$(req POST /box-office/sales "$OPER" "{\"itineraryId\":\"$IT\",\"paymentMethod\":\"EFECTIVO\",\"seatNumbers\":[\"$ASIENTO\"]}")
+S4_TQ=$(s4_libre); [ -n "$S4_TQ" ] || fail "no quedan asientos libres en $IT para la taquilla"
+R=$(req POST /box-office/sales "$OPER" "{\"itineraryId\":\"$IT\",\"seatNumbers\":[\"$S4_TQ\"],\"pasajeros\":[{\"nombre\":\"Taquilla Smoke\",\"tipoDocumento\":\"CC\",\"numeroDocumento\":\"1234567\"}],\"comprador\":{\"nombre\":\"Taquilla Smoke\",\"email\":\"taquilla.smoke@tripbus.co\",\"telefono\":\"3001234567\"}}" "Idempotency-Key: smoke4-taquilla-$(date +%s)-$RANDOM")
 if nodisp "$R"; then skip "venta en taquilla aún no está en develop de booking"; elif [ "$(status "$R")" = 201 ]; then
-  ok "OPERADOR vendió en efectivo"
-  R=$(req POST /box-office/close "$OPER" '{"metodo":"EFECTIVO"}')
-  if nodisp "$R"; then skip "cierre de caja aún no está en develop de booking"; elif [ "$(status "$R")" = 200 ]; then ok "cierre de caja muestra la venta"; else fail "cierre de caja: $R"; fi
+  ok "OPERADOR vendió el asiento $S4_TQ en taquilla"
+  R=$(req GET /box-office/sales "$OPER" '')
+  [ "$(status "$R")" = 200 ] && ok "cierre de caja: GET /box-office/sales" || fail "cierre de caja: $R"
 else fail "taquilla: $R"; fi
 R=$(req GET "/tickets/$TK/pdf" "$PAX" ''); if nodisp "$R"; then skip "PDF de tiquete aún no está en develop de booking"; elif [ "$(status "$R")" = 200 ]; then
   T=$(curl -s -D - -o /tmp/tb_ticket.pdf -H "Authorization: Bearer $PAX" "$API/tickets/$TK/pdf" | tr -d '\r' | grep -i '^Content-Type:' || true)
@@ -139,9 +157,10 @@ R=$(req GET "/tickets/$TK/pdf" "$PAX" ''); if nodisp "$R"; then skip "PDF de tiq
 else fail "PDF tiquete: $R"; fi
 
 step "11.7 Reportes"
-R=$(req GET '/reports/sales?agrupar=metodo' "$ADMIN" ''); if nodisp "$R"; then skip "reportes de ventas aún no están en develop de booking"; elif [ "$(status "$R")" = 200 ]; then
-  for M in TARJETA NEQUI PSE EFECTIVO; do echo "$(body "$R")" | grep -q "$M" || fail "reporte de ventas no contiene $M"; done
-  echo "$(body "$R")" | grep -qi comision && ok "reporte por método contiene TARJETA, NEQUI, PSE, EFECTIVO y comisión" || fail "reporte de ventas no contiene comisión"
+R=$(req GET "/reports/sales?desde=$(date +%F)&hasta=$(date +%F)&agrupar=metodo" "$ADMIN" ''); if nodisp "$R"; then skip "reportes de ventas aún no están en develop de booking"; elif [ "$(status "$R")" = 200 ]; then
+  [ "$(body "$R" | jq '.grupos | length')" -gt 0 ] || fail "reporte de ventas sin grupos: $R"
+  body "$R" | jq -e '.totales | has("comisionTripBus")' >/dev/null || fail "reporte de ventas sin comisionTripBus: $R"
+  ok "reporte por método: $(body "$R" | jq -r '[.grupos[].grupo] | join(", ")') con comisión $(body "$R" | jq -r .totales.comisionTripBus) COP"
 else fail "reporte ventas: $R"; fi
 R=$(req GET "/reports/platform?mes=$(date +%Y-%m)" "$ADMIN" ''); if nodisp "$R"; then skip "reporte de plataforma aún no está en develop"; elif [ "$(status "$R")" = 200 ]; then ok "ADMIN consultó reporte de plataforma del mes"; else fail "reporte plataforma: $R"; fi
 
