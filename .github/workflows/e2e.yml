@@ -26,9 +26,9 @@ concurrency:
 
 env:
   PROYECTO: tripbus-qa
-  # Imágenes del CI: :qa (rama develop) de los servicios; el frontend publica :develop.
+  # Imágenes del CI: :qa (rama develop) de los servicios; el frontend publica :main.
   TAG: qa
-  FRONTEND_TAG: develop
+  FRONTEND_TAG: main
   WEBSOCAT_VERSION: v1.14.0
 
 jobs:
