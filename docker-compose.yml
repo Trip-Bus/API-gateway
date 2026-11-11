@@ -163,6 +163,8 @@ services:
       # Identity valida con Catalog que la empresa exista al crear un OPERADOR.
       CATALOG_URL: http://catalog-service:18002
       FRONTEND_URL: ${FRONTEND_URL:?Falta FRONTEND_URL en .env.qa o .env.prod}
+      # Login con Google: vacío = desactivado (/auth/google responde 404).
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       MAIL_HOST: ${MAIL_HOST:-}
       MAIL_PORT: ${MAIL_PORT:-}
       MAIL_USERNAME: ${MAIL_USERNAME:-}

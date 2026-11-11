@@ -68,6 +68,7 @@ services:
       <<: [*prod-env, *prod-internal]
       DB_USERNAME: ${IDENTITY_DB_USERNAME:?Falta IDENTITY_DB_USERNAME en .env.prod}
       DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?Falta IDENTITY_DB_PASSWORD en .env.prod}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
 
   catalog-service:
     <<: *restart

@@ -142,7 +142,8 @@ server {
     add_header Vary                          Origin always;
     add_header X-Request-Id                  $req_id always;
     # HT-12: en TODAS las respuestas (frontend, API y /docs).
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws://$http_host wss://$http_host; manifest-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action $csp_form_action" always;
+    # Google Identity Services (botón "Continuar con Google"): solo /gsi/ de accounts.google.com.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws://$http_host wss://$http_host https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; manifest-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action $csp_form_action" always;
     add_header X-Content-Type-Options  "nosniff" always;
     add_header Referrer-Policy         "strict-origin-when-cross-origin" always;
     add_header X-Frame-Options         "DENY" always;
@@ -232,6 +233,9 @@ server {
     # ======================= Identity ===============================================
     location = /auth/register { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
     location = /auth/login    { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
+    location = /auth/google   { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
+    # Qué proveedores de inicio de sesión están activos (p. ej. Google con su clientId público).
+    location = /auth/providers { proxy_pass http://identity; }
     location = /auth/refresh   { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
     # Segundo paso del login con 2FA (US-106): público, con el límite estricto de login.
     location = /auth/2fa      { limit_req zone=auth_ip burst=10 nodelay; proxy_pass http://identity; }
