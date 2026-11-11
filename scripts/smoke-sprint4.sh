@@ -138,7 +138,7 @@ case "$(status "$R")" in 200|202) ;; *) fail "pago PSE: $R";; esac
 S4_PSE_URL=$(body "$R" | jq -r '.redirectUrl // empty'); [ -n "$S4_PSE_URL" ] || fail "pago PSE sin redirectUrl: $R"
 S4_PSE_ID=${S4_PSE_URL##*/sandbox/pse/}; ok "pago PSE iniciado con banco 1 → $S4_PSE_URL"
 R=$(req GET "/sandbox/pse/$S4_PSE_ID" '' '')
-[ "$(status "$R")" = 200 ] && body "$R" | grep -qi '<html' && ok "página bancaria sandbox pública (HTML)" || fail "GET sandbox PSE: $(status "$R")"
+[ "$(status "$R")" = 200 ] && body "$R" | grep -qi 'Banco de prueba' && ok "página bancaria sandbox pública (Banco de prueba)" || fail "GET sandbox PSE: $(status "$R") $(body "$R" | head -c 200)"
 R=$(req POST "/sandbox/pse/$S4_PSE_ID?action=approve" '' '')
 [ "$(status "$R")" = 302 ] && ok "sandbox PSE aprobó el pago (302)" || fail "aprobar en sandbox PSE: $R"
 s4_espera "$S4_BK" && ok "reserva PSE $S4_BK CONFIRMADA" || fail "la reserva PSE $S4_BK quedó en $S4_EST"
