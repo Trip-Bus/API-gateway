@@ -77,7 +77,7 @@ jobs:
       - name: Levantar la plataforma
         run: |
           docker compose -p "$PROYECTO" --env-file .env.qa -f docker-compose.yml -f docker-compose.qa.yml up -d --no-build
-          scripts/wait-healthy.sh "$PROYECTO" 900 http://localhost:18000
+          bash scripts/wait-healthy.sh "$PROYECTO" 900 http://localhost:18000
 
       - name: Smoke test completo (MVP y sprints 2 a 6)
         run: |
