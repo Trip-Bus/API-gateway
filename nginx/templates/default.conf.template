@@ -90,8 +90,24 @@ resolver ${RESOLVER};
 resolver_timeout 3s;
 
 upstream identity       { zone up_identity 64k;       server ${IDENTITY_UPSTREAM} resolve;       keepalive 16; }
-upstream catalog        { zone up_catalog 64k;        server ${CATALOG_UPSTREAM} resolve;        keepalive 16; }
-upstream seat_inventory { zone up_seat_inventory 64k; server ${SEAT_INVENTORY_UPSTREAM} resolve; keepalive 32; }
+# Catalog y Seat Inventory pueden tener una segunda réplica en otro nodo (escenario 1.1): least_conn
+# reparte entre las dos y una réplica que falla 3 veces sale del balanceo por 10 s (vuelve sola).
+# 15-upstreams-replicas.envsh genera *_RESOLVE ("resolve" solo para nombres; una IP 100.x.x.x de
+# Tailscale no se re-resuelve) y *_2_SERVER (vacío si *_UPSTREAM_2 está vacío: un solo servidor).
+upstream catalog {
+    zone up_catalog 64k;
+    least_conn;
+    server ${CATALOG_UPSTREAM} ${CATALOG_UPSTREAM_RESOLVE} max_fails=3 fail_timeout=10s;
+    ${CATALOG_UPSTREAM_2_SERVER}
+    keepalive 16;
+}
+upstream seat_inventory {
+    zone up_seat_inventory 64k;
+    least_conn;
+    server ${SEAT_INVENTORY_UPSTREAM} ${SEAT_INVENTORY_UPSTREAM_RESOLVE} max_fails=3 fail_timeout=10s;
+    ${SEAT_INVENTORY_UPSTREAM_2_SERVER}
+    keepalive 32;
+}
 upstream booking        { zone up_booking 64k;        server ${BOOKING_UPSTREAM} resolve;        keepalive 16; }
 upstream fleet          { zone up_fleet 64k;          server ${FLEET_UPSTREAM} resolve;          keepalive 16; }
 upstream flash_offers   { zone up_flash_offers 64k;   server ${FLASH_OFFERS_UPSTREAM} resolve;   keepalive 32; }

@@ -480,4 +480,6 @@ PROD sigue en Docker Compose. Detalle, secretos y despliegue: [`k8s/README.md`](
 ## Más
 
 - Contratos, eventos y decisiones: [`docs/arquitectura.md`](docs/arquitectura.md).
+- Despliegue en 2 máquinas por Tailscale con Catalog y Seat Inventory replicados (escenario 1.1):
+  [`docs/despliegue-distribuido.md`](docs/despliegue-distribuido.md).
 - `tools/prefetch-deps` — descarga a `~/.m2` todas las dependencias Maven de los servicios (trabajo sin conexión).

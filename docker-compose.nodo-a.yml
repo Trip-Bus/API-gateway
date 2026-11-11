@@ -1,0 +1,148 @@
+# =============================================================================
+#  Despliegue distribuido (escenario de calidad 1.1) — NODO A: entrada, servicios y réplica 1.
+#  Guía completa: docs/despliegue-distribuido.md. Se arranca DESPUÉS del nodo B:
+#    docker compose -f docker-compose.nodo-a.yml --env-file .env.prod --env-file .env.distribuido up -d --build
+#
+#  Aquí: api-gateway (NGINX), cloudflared, identity, booking, fleet, flash-offers, realtime, frontend,
+#  swagger-ui y catalog-service y seat-inventory-service (réplica 1). Las bases de datos, Redis y el
+#  collector de trazas están en el nodo B (NODO_B_IP, por Tailscale).
+#  Cada servicio se hereda (extends) de docker-compose.yml (o de docker-compose.prod.yml para cloudflared):
+#  misma imagen, variables y secretos (vienen de .env.prod, no se repiten aquí).
+#
+#  NGINX balancea catalog y seat-inventory (least_conn) entre la réplica local y la del nodo B:
+#    CATALOG_UPSTREAM_2=${NODO_B_IP}:18002 · SEAT_INVENTORY_UPSTREAM_2=${NODO_B_IP}:18003
+#  La imagen del gateway se construye desde este repositorio (trae la plantilla con la segunda réplica).
+#
+#  Puertos publicados en el host:
+#    18000 API Gateway (igual que PROD; el túnel de Cloudflare también entra por aquí).
+#    18001-18007 servicios internos: el nodo B los necesita (JWKS de identity para la réplica 2 y el
+#    scrape de Prometheus). SOLO deben ser accesibles por Tailscale (NODO_A_BIND_IP = IP de Tailscale de
+#    este nodo, o firewall de Windows que limite a 100.64.0.0/10): saltan la autenticación del gateway.
+# =============================================================================
+name: tripbus-nodo-a
+
+x-restart: &restart
+  restart: always
+
+# Redis y el collector de trazas del nodo B; logs JSON y histogramas como en docker-compose.observabilidad.yml.
+x-nodo-b-env: &nodo-b-env
+  REDIS_HOST: ${NODO_B_IP:?Falta NODO_B_IP en .env.distribuido}
+  REDIS_PORT: 18100
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://${NODO_B_IP}:4318
+  LOG_FORMAT: json
+  TRACING_SAMPLING: ${TRACING_SAMPLING:-0.1}
+  MANAGEMENT_METRICS_DISTRIBUTION_PERCENTILESHISTOGRAM_HTTP_SERVER_REQUESTS: "true"
+
+services:
+  # Llaves con las que identity firma los JWT (volumen local del nodo A).
+  jwt-keys:
+    extends: { file: docker-compose.yml, service: jwt-keys }
+
+  # ================================================================ microservicios
+  identity:
+    extends: { file: docker-compose.yml, service: identity }
+    <<: *restart
+    environment:
+      <<: *nodo-b-env
+      DB_HOST: ${NODO_B_IP}
+      DB_PORT: 18101
+    ports: ["${NODO_A_BIND_IP:-0.0.0.0}:18001:18001"]
+    depends_on: !override
+      jwt-keys:
+        condition: service_completed_successfully
+
+  # Réplica 1. Única que puede sembrar datos (SEED_ON_STARTUP de .env.prod; la del nodo B va en false).
+  catalog-service:
+    extends: { file: docker-compose.yml, service: catalog-service }
+    <<: *restart
+    environment:
+      <<: *nodo-b-env
+      DB_HOST: ${NODO_B_IP}
+      DB_PORT: 18102
+    ports: ["${NODO_A_BIND_IP:-0.0.0.0}:18002:18002"]
+    depends_on: !reset {}
+
+  # Réplica 1.
+  seat-inventory-service:
+    extends: { file: docker-compose.yml, service: seat-inventory-service }
+    <<: *restart
+    environment:
+      <<: *nodo-b-env
+      DB_HOST: ${NODO_B_IP}
+      DB_PORT: 18103
+    ports: ["${NODO_A_BIND_IP:-0.0.0.0}:18003:18003"]
+    depends_on: !reset {}
+
+  booking-payment-service:
+    extends: { file: docker-compose.yml, service: booking-payment-service }
+    <<: *restart
+    environment:
+      <<: *nodo-b-env
+      DB_HOST: ${NODO_B_IP}
+      DB_PORT: 18104
+    ports: ["${NODO_A_BIND_IP:-0.0.0.0}:18004:18004"]
+    depends_on: !reset {}
+
+  fleet-trip-events-service:
+    extends: { file: docker-compose.yml, service: fleet-trip-events-service }
+    <<: *restart
+    environment:
+      <<: *nodo-b-env
+      DB_HOST: ${NODO_B_IP}
+      DB_PORT: 18105
+    ports: ["${NODO_A_BIND_IP:-0.0.0.0}:18005:18005"]
+    depends_on: !reset {}
+
+  flash-offers-service:
+    extends: { file: docker-compose.yml, service: flash-offers-service }
+    <<: *restart
+    environment:
+      <<: *nodo-b-env
+      DB_HOST: ${NODO_B_IP}
+      DB_PORT: 18106
+      # Flash Offers usa la variable tal cual como URL de las trazas (no le agrega /v1/traces).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://${NODO_B_IP}:4318/v1/traces
+    ports: ["${NODO_A_BIND_IP:-0.0.0.0}:18006:18006"]
+    depends_on: !reset {}
+
+  realtime-gateway:
+    extends: { file: docker-compose.yml, service: realtime-gateway }
+    <<: *restart
+    environment:
+      <<: *nodo-b-env
+      # Push (US-185): obligatorias como en PROD.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:?Falta VAPID_PUBLIC_KEY en .env.prod}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:?Falta VAPID_PRIVATE_KEY en .env.prod}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:?Falta VAPID_SUBJECT en .env.prod}
+    ports: ["${NODO_A_BIND_IP:-0.0.0.0}:18007:18007"]
+    depends_on: !override
+      identity:
+        condition: service_healthy
+
+  # ================================================================ frontend, docs y gateways
+  frontend:
+    extends: { file: docker-compose.yml, service: frontend }
+    <<: *restart
+
+  swagger-ui:
+    extends: { file: docker-compose.yml, service: swagger-ui }
+    <<: *restart
+
+  api-gateway:
+    extends: { file: docker-compose.yml, service: api-gateway }
+    <<: *restart
+    # Imagen local desde este repositorio (plantilla con la segunda réplica y least_conn).
+    image: tripbus/api-gateway:distribuido
+    build: { context: . }
+    pull_policy: build
+    environment:
+      CATALOG_UPSTREAM_2: ${NODO_B_IP}:18002
+      SEAT_INVENTORY_UPSTREAM_2: ${NODO_B_IP}:18003
+    ports: ["18000:18000"]
+
+  # Túnel de Cloudflare (HT-04), igual que en PROD.
+  cloudflared:
+    extends: { file: docker-compose.prod.yml, service: cloudflared }
+
+volumes:
+  jwt-keys:
