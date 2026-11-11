@@ -28,7 +28,7 @@ elif [ "$(status "$R")" = 201 ]; then
         S4_ACCESS=$(body "$R" | jq -r '.accessToken // .token // empty'); S4_REFRESH=$(body "$R" | jq -r '.refreshToken // empty')
         if [ -z "$S4_ACCESS" ]; then skip "login verificado no devolvió access token"
         else
-          R=$(req PUT /users/me/password "$S4_ACCESS" "{\"currentPassword\":\"$S4_PASS\",\"newPassword\":\"Passw0rd2\"}")
+          R=$(req PUT /users/me/password "$S4_ACCESS" "{\"passwordActual\":\"$S4_PASS\",\"passwordNueva\":\"Passw0rd2\"}")
           if nodisp "$R"; then skip "cambio de password aún no está en develop de identity"
           elif [ "$(status "$R")" -ge 200 ] && [ "$(status "$R")" -lt 300 ]; then
             [ "$(status "$(req GET /users/me "$S4_ACCESS" '')")" = 401 ] && ok "token viejo → 401" || fail "token viejo no fue revocado al cambiar password"
@@ -94,8 +94,12 @@ elif [ "$(status "$R")" = 200 ]; then
   # El token de $OTRO ya fue revocado por el logout de smoke-test.sh: se registra un pasajero nuevo.
   R=$(req POST /auth/register '' "{\"email\":\"smoke.$RANDOM$RANDOM@tripbus.co\",\"password\":\"Passw0rd1\",\"documentoIdentidad\":\"CC$RANDOM$RANDOM\",\"nombre\":\"Lista Espera\",\"aceptaPoliticaDatos\":true}")
   [ "$(status "$R")" = 201 ] || fail "registro para lista de espera: $R"; S4_ESPERA=$(body "$R" | jq -r .accessToken)
-  R=$(req POST "/seats/itineraries/$IT/waitlist" "$S4_ESPERA" '{"seatCount":1}')
-  if nodisp "$R"; then skip "inscripción a lista de espera aún no está en develop"; elif [ "$(status "$R")" = 201 ]; then ok "otro pasajero se anotó; oferta de asiento depende de liberar un asiento agotado"; else fail "lista de espera: $R"; fi
+  R=$(req POST "/seats/itineraries/$IT/waitlist" "$S4_ESPERA" '{"cantidad":1}')
+  # Solo se entra a la lista si el viaje no tiene cupo: con asientos libres responde 409 SEATS_AVAILABLE.
+  if nodisp "$R"; then skip "inscripción a lista de espera aún no está en develop"
+  elif [ "$(status "$R")" = 201 ]; then ok "otro pasajero se anotó en la lista de espera"
+  elif [ "$(status "$R")" = 409 ] && [ "$(body "$R" | jq -r '.error.code // empty' 2>/dev/null)" = SEATS_AVAILABLE ]; then ok "con asientos libres la lista de espera rechaza la inscripción (409 SEATS_AVAILABLE)"
+  else fail "lista de espera: $R"; fi
 else fail "ocupación: $R"; fi
 
 step "11.5 Pagos: NEQUI y PSE/sandbox"
