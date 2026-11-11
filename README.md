@@ -405,7 +405,8 @@ son del frontend.
 | `/` (cualquier ruta que no sea del API) | Frontend | pública (la app) |
 | `/api/v1/*`, `/api/*` | el de la ruta sin prefijo | la de la ruta sin prefijo; desconocida → 404 JSON |
 | `/docs/`, `/docs/specs/<servicio>` | Swagger UI / `/v3/api-docs` de cada servicio | pública (solo con `DOCS_ENABLED=true`) |
-| `/auth/login`, `/auth/register`, `/auth/password-reset/*`, `/auth/refresh`, `/auth/verify-email`, `/auth/2fa` | Identity | públicas (rate limit estricto) |
+| `/auth/login`, `/auth/register`, `/auth/password-reset/*`, `/auth/refresh`, `/auth/verify-email`, `/auth/2fa`, `/auth/google` | Identity | públicas (rate limit estricto) |
+| `/auth/providers` | Identity | pública (proveedores de login activos, p. ej. Google) |
 | `/auth/verify-email/resend` | Identity | JWT |
 | `/users`, `/users/*` (incluye `/users/me`, `/users/me/password`, `/users/me/data`, `/users/me/delete`, `/users/{id}/lock`) | Identity | JWT |
 | `/auth/logout`, `/users/me/2fa/*` | Identity | JWT validado por identity (sin `auth_request`): con `MFA_REQUIRED_ROLES`, quien aún no activa la 2FA solo puede activarla o cerrar sesión |
