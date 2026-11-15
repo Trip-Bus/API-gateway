@@ -9,6 +9,11 @@
 #  Las variables ${...} se reemplazan al iniciar el contenedor (envsubst).
 # =============================================================================
 
+# ---- Tablas hash de los map: el bucket por defecto (64) no alcanza para orígenes CORS largos
+#      (p. ej. un dominio de trycloudflare.com) y NGINX no arranca ("could not build map_hash").
+map_hash_bucket_size 256;
+map_hash_max_size    4096;
+
 # ---- Correlación: se respeta el X-Request-Id del cliente si es corto y seguro (mismo patrón que
 #      el RequestIdFilter de los servicios); si no viene o no es válido, NGINX genera uno.
 map $http_x_request_id $req_id {

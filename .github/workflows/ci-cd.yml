@@ -119,6 +119,17 @@ jobs:
             -e CATALOG_UPSTREAM_2=100.64.0.2:18002 -e SEAT_INVENTORY_UPSTREAM_2=100.64.0.2:18003 \
             -e FRONTEND_URL=http://localhost:5173 -e CORS_ALLOWED_ORIGIN=http://localhost:5173 \
             api-gateway:test nginx -t
+          # Origen CORS de más de 64 caracteres (dominio del túnel): exige map_hash_bucket_size > 64.
+          docker run --rm \
+            --add-host identity:127.0.0.1 --add-host catalog-service:127.0.0.1 \
+            --add-host seat-inventory-service:127.0.0.1 --add-host booking-payment-service:127.0.0.1 \
+            --add-host fleet-trip-events-service:127.0.0.1 --add-host flash-offers-service:127.0.0.1 \
+            --add-host realtime-gateway:127.0.0.1 --add-host frontend:127.0.0.1 \
+            --add-host swagger-ui:127.0.0.1 \
+            -e REALTIME_UPSTREAM=realtime-gateway:18007 \
+            -e FRONTEND_URL=https://observations-third-litigation-proceeds.trycloudflare.com \
+            -e CORS_ALLOWED_ORIGIN=https://observations-third-litigation-proceeds-tripbus-gateway.trycloudflare.com,http://localhost:5173 \
+            api-gateway:test nginx -t
 
       - name: docker compose válido (QA, PROD y nodos A/B)
         run: |
