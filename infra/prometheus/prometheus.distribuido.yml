@@ -1,0 +1,37 @@
+# Observabilidad (HT-10) en el despliegue distribuido (escenario 1.1, docs/despliegue-distribuido.md).
+# Prometheus corre en el NODO B y lee los servicios de LOS DOS nodos:
+#   - nodo B: réplica 2 de catalog y seat-inventory, por la red de Docker.
+#   - nodo A: el resto y la réplica 1, por Tailscale (NODO_A_IP lo reemplaza el arranque del contenedor).
+# Las etiquetas servicio y nodo se fijan por target (con IPs el host ya no dice qué servicio es); las
+# alertas (alertas.yml) agrupan por servicio y siguen funcionando igual.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alertas.yml
+
+scrape_configs:
+  - job_name: tripbus
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # ---- nodo A
+      - targets: ["NODO_A_IP:18001"]
+        labels: { servicio: identity, nodo: a }
+      - targets: ["NODO_A_IP:18002"]
+        labels: { servicio: catalog-service, nodo: a }
+      - targets: ["NODO_A_IP:18003"]
+        labels: { servicio: seat-inventory-service, nodo: a }
+      - targets: ["NODO_A_IP:18004"]
+        labels: { servicio: booking-payment-service, nodo: a }
+      - targets: ["NODO_A_IP:18005"]
+        labels: { servicio: fleet-trip-events-service, nodo: a }
+      - targets: ["NODO_A_IP:18006"]
+        labels: { servicio: flash-offers-service, nodo: a }
+      - targets: ["NODO_A_IP:18007"]
+        labels: { servicio: realtime-gateway, nodo: a }
+      # ---- nodo B (réplica 2)
+      - targets: ["catalog-service:18002"]
+        labels: { servicio: catalog-service, nodo: b }
+      - targets: ["seat-inventory-service:18003"]
+        labels: { servicio: seat-inventory-service, nodo: b }

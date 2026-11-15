@@ -1,6 +1,7 @@
 # Los scripts y la configuración que corren dentro de contenedores Linux deben tener fin de línea LF
 # aunque se clone en Windows (core.autocrlf=true): con CRLF, sh y NGINX fallan.
 *.sh        text eol=lf
+*.envsh     text eol=lf
 *.template  text eol=lf
 *.conf      text eol=lf
 *.yml       text eol=lf

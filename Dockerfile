@@ -14,6 +14,8 @@ RUN echo "apk upgrade: $APK_CACHE_BUST" && apk upgrade --no-cache
 COPY nginx/templates/ /etc/nginx/templates/
 # Corre después de 20-envsubst-on-templates.sh: genera el map de orígenes CORS permitidos.
 COPY --chmod=755 nginx/entrypoint/25-cors-origins.sh /docker-entrypoint.d/25-cors-origins.sh
+# Se "sourcea" antes del envsubst: segundo servidor de catalog/seat-inventory y "resolve" solo para nombres.
+COPY --chmod=755 nginx/entrypoint/15-upstreams-replicas.envsh /docker-entrypoint.d/15-upstreams-replicas.envsh
 
 # Valores por defecto (nombres de servicio de docker-compose). En compose/Kubernetes se pueden cambiar.
 #  RESOLVER: DNS interno de Docker (127.0.0.11); valid=10s = vuelve a preguntar la IP cada 10 s.
@@ -22,12 +24,16 @@ COPY --chmod=755 nginx/entrypoint/25-cors-origins.sh /docker-entrypoint.d/25-cor
 #  FRONTEND_URL: se agrega al form-action de la CSP solo en /sandbox/ (el banco de prueba redirige allí).
 #  DOCS_ENABLED: /docs solo responde con true (compose de QA lo enciende; PROD lo deja apagado).
 #  HSTS_ENABLED: true agrega Strict-Transport-Security (solo detrás de HTTPS, p. ej. el túnel).
+#  CATALOG_UPSTREAM_2 / SEAT_INVENTORY_UPSTREAM_2: segunda réplica (otro nodo, p. ej. 100.x.x.x:18002 por
+#    Tailscale). Vacías = un solo servidor, como en el despliegue de un nodo.
 #  REAL_IP_FROM: red desde la que se cree el header CF-Connecting-IP (cloudflared en la red de Docker).
 ENV GATEWAY_PORT=18000 \
     RESOLVER="127.0.0.11 valid=10s ipv6=off" \
     IDENTITY_UPSTREAM=identity:18001 \
     CATALOG_UPSTREAM=catalog-service:18002 \
     SEAT_INVENTORY_UPSTREAM=seat-inventory-service:18003 \
+    CATALOG_UPSTREAM_2="" \
+    SEAT_INVENTORY_UPSTREAM_2="" \
     BOOKING_UPSTREAM=booking-payment-service:18004 \
     FLEET_UPSTREAM=fleet-trip-events-service:18005 \
     FLASH_OFFERS_UPSTREAM=flash-offers-service:18006 \

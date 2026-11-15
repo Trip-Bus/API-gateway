@@ -1,0 +1,43 @@
+#!/bin/sh
+# Réplicas de catalog y seat-inventory (escenario de calidad 1.1, despliegue distribuido).
+# El entrypoint de la imagen de NGINX "sourcea" los *.envsh ANTES de 20-envsubst-on-templates.sh: las
+# variables que se exportan aquí quedan disponibles para la plantilla.
+#
+#   <X>_UPSTREAM_RESOLVE  "resolve" si el host es un nombre (DNS de Docker); vacío si es una IP literal
+#                         (p. ej. 100.x.x.x:18002 de Tailscale), que no se re-resuelve.
+#   <X>_UPSTREAM_2_SERVER directiva completa del segundo servidor, o vacía si <X>_UPSTREAM_2 está vacío
+#                         (un solo nodo: el upstream queda con un único servidor, igual que antes).
+# Sin "set -e": este archivo corre dentro del shell del entrypoint.
+
+_tb_opcion_resolve() {
+  # IPv4 literal → sin resolve; cualquier otro host → resolve.
+  if echo "${1%:*}" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+    echo ""
+  else
+    echo "resolve"
+  fi
+}
+
+_tb_validar() {
+  # $1 = nombre de la variable, $2 = valor (host:puerto). Evita inyectar configuración en la plantilla.
+  if ! echo "$2" | grep -Eq '^[A-Za-z0-9.-]+:[0-9]{1,5}$'; then
+    echo "15-upstreams-replicas.envsh: $1 inválido: '$2' (se espera host:puerto)" >&2
+    exit 1
+  fi
+}
+
+for _tb_var in CATALOG_UPSTREAM SEAT_INVENTORY_UPSTREAM; do
+  eval "_tb_v1=\${$_tb_var:-}"
+  eval "_tb_v2=\${${_tb_var}_2:-}"
+  _tb_validar "$_tb_var" "$_tb_v1"
+  export "${_tb_var}_RESOLVE=$(_tb_opcion_resolve "$_tb_v1")"
+  if [ -n "$_tb_v2" ]; then
+    _tb_validar "${_tb_var}_2" "$_tb_v2"
+    _tb_r2=$(_tb_opcion_resolve "$_tb_v2")
+    export "${_tb_var}_2_SERVER=server $_tb_v2 ${_tb_r2:+$_tb_r2 }max_fails=3 fail_timeout=10s;"
+    echo "15-upstreams-replicas.envsh: $_tb_var balanceado (least_conn) entre $_tb_v1 y $_tb_v2"
+  else
+    export "${_tb_var}_2_SERVER="
+  fi
+done
+unset _tb_var _tb_v1 _tb_v2 _tb_r2

@@ -36,6 +36,9 @@ cerrar_ofertas_de() {
   done
 }
 en_seg() { date -u -d "+$1 sec" +%FT%TZ 2>/dev/null || date -u -v+"$1"S +%FT%TZ; }
+# Si el endpoint aún no está en develop del servicio (404/405), el paso se omite con un aviso.
+skip()  { printf '  \033[33m⚠ omitido: %s\033[0m\n' "$*"; }
+nodisp() { case "$(status "$1")" in 404|405) return 0;; *) return 1;; esac; }
 
 step "0. Gateways arriba (18000 REST y WebSocket /ws, 18007 demo del Realtime en QA)"
 [ "$(curl -s -o /dev/null -w "%{http_code}" "$API/health")" = 200 ] && ok "API Gateway $API/health → 200" || fail "API Gateway no responde en $API"
@@ -59,6 +62,19 @@ ok "tokens emitidos para pasajero, operador, conductor y admin"
 R=$(req POST /auth/register '' "{\"email\":\"smoke.$RANDOM$RANDOM@tripbus.co\",\"password\":\"Passw0rd1\",\"documentoIdentidad\":\"CC$RANDOM$RANDOM\",\"nombre\":\"Smoke Test\",\"aceptaPoliticaDatos\":true}")
 [ "$(status "$R")" = 201 ] || fail "registro: $R"; OTRO=$(body "$R" | jq -r .accessToken); ok "registro de un pasajero nuevo con consentimiento (US-001)"
 [ "$(status "$(req POST /admin/seed "$PAX" '')")" = 403 ] && ok "un pasajero NO puede ejecutar el seed (US-005)" || fail "control de roles"
+# Login con Google: /auth/providers es público; un idToken falso → 401 (Google configurado) o 404 (sin GOOGLE_CLIENT_ID).
+# El gateway no pide token en /auth/providers: un 401 ahí lo da la seguridad de un identity sin el endpoint.
+R=$(req GET /auth/providers '' '')
+if nodisp "$R" || [ "$(status "$R")" = 401 ]; then skip "GET /auth/providers y POST /auth/google no están disponibles en identity"
+elif [ "$(status "$R")" = 200 ]; then
+  ok "GET /auth/providers sin token → 200 $(body "$R" | jq -c . 2>/dev/null)"
+  R=$(req POST /auth/google '' '{"idToken":"token.falso.smoke"}')
+  case "$(status "$R")" in
+    401) ok "POST /auth/google con idToken falso → 401 (Google configurado)";;
+    404) ok "POST /auth/google con idToken falso → 404 (Google no configurado)";;
+    *) fail "login con Google: $R";;
+  esac
+else fail "proveedores de login: $R"; fi
 
 step "2. Catalog: búsqueda (US-007/008)"
 FECHA=$(date -d tomorrow +%F 2>/dev/null || date -v+1d +%F)
@@ -127,9 +143,6 @@ step "7. Cierre de sesión (US-096)"
 [ "$(status "$(req GET /bookings "$OTRO" '')")" = 401 ] && ok "el token revocado es rechazado en el API Gateway" || fail "revocación"
 
 step "8. Sprint 2: empresas, usuarios, buses, rutas y viajes (HT-02)"
-# Si el endpoint aún no está en develop del servicio (404/405), el paso se omite con un aviso.
-skip()  { printf '  \033[33m⚠ omitido: %s\033[0m\n' "$*"; }
-nodisp() { case "$(status "$1")" in 404|405) return 0;; *) return 1;; esac; }
 SUF="$RANDOM$RANDOM"
 CO=""; BUS=""; RUTA=""; VIAJE=""
 R=$(req POST /companies "$ADMIN" "{\"nombre\":\"Smoke Transportes $SUF\",\"nit\":\"9$(printf '%08d' "$SUF" | tail -c 8)\"}")
