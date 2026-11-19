@@ -1,0 +1,51 @@
+# =============================================================================
+#  Entrada del nodo B detrás del Azure Load Balancer (tripbus-lb): Caddy (HTTPS) + API Gateway NGINX +
+#  frontend. Catalog y seat-inventory se balancean entre la réplica local y la del nodo A; identity, booking,
+#  fleet, flash-offers y realtime van al nodo A por la red privada (10.10.1.10).
+#  Uso en vm-nodo-b (junto al compose del nodo B):
+#    docker compose -p tripbus-nodo-b -f docker-compose.nodo-b.yml -f docker-compose.nodo-b-entrada.yml \
+#      --env-file .env.prod --env-file .env.distribuido up -d --build frontend api-gateway caddy
+# =============================================================================
+services:
+  frontend:
+    image: ghcr.io/trip-bus/frontend:main
+    restart: always
+    mem_limit: 64m
+    environment:
+      FRONTEND_PORT: 80
+      API_GATEWAY_URL: http://api-gateway:18000
+      REALTIME_URL: http://10.10.1.10:18007
+  api-gateway:
+    image: tripbus/api-gateway:distribuido
+    build: { context: . }
+    pull_policy: build
+    restart: always
+    mem_limit: 128m
+    environment:
+      GATEWAY_PORT: 18000
+      RESOLVER: 127.0.0.11 valid=10s ipv6=off
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN}
+      FRONTEND_URL: ${FRONTEND_URL}
+      HSTS_ENABLED: ${HSTS_ENABLED:-false}
+      DOCS_ENABLED: "false"
+      IDENTITY_UPSTREAM: 10.10.1.10:18001
+      CATALOG_UPSTREAM: catalog-service:18002
+      CATALOG_UPSTREAM_2: 10.10.1.10:18002
+      SEAT_INVENTORY_UPSTREAM: seat-inventory-service:18003
+      SEAT_INVENTORY_UPSTREAM_2: 10.10.1.10:18003
+      BOOKING_UPSTREAM: 10.10.1.10:18004
+      FLEET_UPSTREAM: 10.10.1.10:18005
+      FLASH_OFFERS_UPSTREAM: 10.10.1.10:18006
+      REALTIME_UPSTREAM: 10.10.1.10:18007
+      FRONTEND_UPSTREAM: frontend:80
+      SWAGGER_UI_UPSTREAM: 10.10.1.10:18000
+    depends_on: [frontend]
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: always
+    mem_limit: 128m
+    ports: ["80:80", "443:443"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy-data:/data"]
+    depends_on: [api-gateway]
+volumes:
+  caddy-data:
